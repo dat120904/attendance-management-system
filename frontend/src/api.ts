@@ -32,6 +32,13 @@ export async function loginWithPassword(email: string, password: string) {
   });
 }
 
+export async function registerAccount(form: { name: string; email: string; role: User["role"]; department: string; password: string; confirmPassword: string }) {
+  return request<LoginResponse>("/api/auth/register", {
+    method: "POST",
+    body: JSON.stringify(form)
+  });
+}
+
 export async function fetchAttendanceLogs(token: string, params: { dateRange: string; status: string; query: string }) {
   const search = new URLSearchParams(params);
   return request<LogsResponse>(`/api/attendance/logs?${search.toString()}`, {

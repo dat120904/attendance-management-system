@@ -1,7 +1,8 @@
 import { createServer, IncomingMessage, ServerResponse } from "node:http";
 import { activeAttendanceSessions, attendanceLogs, auditLogs, users } from "./data.js";
 import type { AttendanceLog } from "./types.js";
-import { getUserByToken, login, logout, publicUser } from "./auth.js";
+import { getUserByToken, login, logout, publicUser, registerAccount } from "./auth.js";
+import type { UserRole } from "./types.js";
 
 const port = Number(process.env.PORT ?? 4000);
 
@@ -32,6 +33,31 @@ const server = createServer(async (request, response) => {
       const token = getBearerToken(request);
       if (token) logout(token);
       sendJson(response, 200, { ok: true });
+      return;
+    }
+
+    if (request.method === "POST" && request.url === "/api/auth/register") {
+      const body = await readJsonBody<{ name?: string; email?: string; role?: UserRole; department?: string; password?: string; confirmPassword?: string }>(request);
+      const validationError = validateRegisterBody(body);
+      if (validationError) {
+        sendJson(response, 400, { error: validationError });
+        return;
+      }
+
+      const result = registerAccount({
+        name: body.name ?? "",
+        email: body.email ?? "",
+        role: body.role ?? "Employee",
+        department: body.department ?? roleDepartment(body.role ?? "Employee"),
+        password: body.password ?? ""
+      });
+
+      if ("error" in result) {
+        sendJson(response, result.status ?? 400, { error: result.error });
+        return;
+      }
+
+      sendJson(response, 201, result);
       return;
     }
 
@@ -272,6 +298,16 @@ function roleDepartment(role: string) {
   if (role === "Manager") return "Operations";
   if (role === "Admin") return "Administration";
   return "Product";
+}
+
+function validateRegisterBody(body: { name?: string; email?: string; role?: UserRole; department?: string; password?: string; confirmPassword?: string }) {
+  const allowedRoles: UserRole[] = ["Employee", "Manager", "HR", "Payroll", "Admin"];
+  if (!body.name?.trim() || !body.email?.trim() || !body.password || !body.confirmPassword) return "Required fields are missing";
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(body.email)) return "Invalid email";
+  if (!allowedRoles.includes(body.role ?? "Employee")) return "Invalid role";
+  if (body.password.length < 6) return "Password must be at least 6 characters";
+  if (body.password !== body.confirmPassword) return "Passwords do not match";
+  return "";
 }
 
 function getRoleScopedLogs(logs: AttendanceLog[], user: { id: string; name: string; role: string }) {

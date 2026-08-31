@@ -63,4 +63,4 @@ export type DashboardData = {
   payrollReadiness: string;
 };
 
-export type AppPage = "dashboard" | "attendanceLogs" | "leaveRequests" | "payrollSummaries" | "settings" | "helpCenter";
+export type AppPage = "dashboard" | "attendanceLogs" | "leaveRequests" | "payrollSummaries" | "settings" | "helpCenter" | "profile";

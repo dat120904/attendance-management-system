@@ -2,9 +2,10 @@ import { useState } from "react";
 import { AttendanceLogsPage } from "./components/AttendanceLogsPage";
 import { AuthPage } from "./components/AuthPage";
 import { Dashboard } from "./components/Dashboard";
+import { ProfilePage } from "./components/ProfilePage";
 import { Sidebar } from "./components/Sidebar";
 import { Topbar } from "./components/Topbar";
-import { loginWithPassword } from "./api";
+import { loginWithPassword, registerAccount } from "./api";
 import { dashboardData, demoUsers } from "./data/mockData";
 import type { Language } from "./i18n";
 import { translations } from "./i18n";
@@ -13,6 +14,7 @@ import { formatClockTime, formatLogDate, formatTotalHours } from "./utils/time";
 
 export default function App() {
   const [users, setUsers] = useState<User[]>(demoUsers);
+  const [localPasswords, setLocalPasswords] = useState<Record<string, string>>({});
   const [user, setUser] = useState<User | null>(null);
   const [authToken, setAuthToken] = useState<string | null>(null);
   const [language, setLanguage] = useState<Language>("en");
@@ -34,6 +36,7 @@ export default function App() {
 
   async function handleLogin(email: string, password: string) {
     const fallbackUser = users.find((item) => item.email === email) ?? users[0];
+    const expectedPassword = localPasswords[email] ?? "password";
 
     try {
       const result = await loginWithPassword(email, password);
@@ -42,7 +45,7 @@ export default function App() {
       setActivePage("dashboard");
       return { ok: true };
     } catch (error) {
-      if (fallbackUser && password === "password") {
+      if (fallbackUser && password === expectedPassword) {
         setAuthToken(null);
         setUser(fallbackUser);
         setActivePage("dashboard");
@@ -50,6 +53,58 @@ export default function App() {
       }
 
       return { ok: false, message: error instanceof Error ? error.message : "Login failed" };
+    }
+  }
+
+  async function handleRegister(form: { name: string; email: string; role: User["role"]; department: string; password: string; confirmPassword: string }) {
+    const name = form.name.trim();
+    const email = form.email.trim().toLowerCase();
+    const department = form.department.trim() || roleDepartment(form.role);
+
+    if (!name || !email || !form.password || !form.confirmPassword) {
+      return { ok: false, message: t.requiredFields };
+    }
+
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      return { ok: false, message: t.invalidEmail };
+    }
+
+    if (form.password.length < 6) {
+      return { ok: false, message: t.passwordMinLength };
+    }
+
+    if (form.password !== form.confirmPassword) {
+      return { ok: false, message: t.passwordMismatch };
+    }
+
+    if (users.some((item) => item.email.toLowerCase() === email)) {
+      return { ok: false, message: t.emailAlreadyExists };
+    }
+
+    const fallbackUser: User = {
+      id: `u-register-${Date.now()}`,
+      name,
+      email,
+      role: form.role,
+      subtitle: department,
+      remainingLeaveDays: 12
+    };
+
+    try {
+      const result = await registerAccount({ ...form, name, email, department });
+      setUsers((current) => [...current, result.user]);
+      setLocalPasswords((current) => ({ ...current, [email]: form.password }));
+      setAuthToken(result.token);
+      setUser(result.user);
+      setActivePage("dashboard");
+      return { ok: true };
+    } catch {
+      setUsers((current) => [...current, fallbackUser]);
+      setLocalPasswords((current) => ({ ...current, [email]: form.password }));
+      setAuthToken(null);
+      setUser(fallbackUser);
+      setActivePage("dashboard");
+      return { ok: true };
     }
   }
 
@@ -163,7 +218,7 @@ export default function App() {
   }
 
   if (!user) {
-    return <AuthPage language={language} onLanguageChange={setLanguage} onLogin={handleLogin} onNewEmployeeCheckIn={handleNewEmployeeCheckIn} onQuickCheckIn={handleQuickCheckIn} t={t} users={users} />;
+    return <AuthPage language={language} onLanguageChange={setLanguage} onLogin={handleLogin} onNewEmployeeCheckIn={handleNewEmployeeCheckIn} onQuickCheckIn={handleQuickCheckIn} onRegister={handleRegister} t={t} users={users} />;
   }
 
   function handleLogout() {
@@ -184,6 +239,7 @@ export default function App() {
           onAttendanceAction={attendanceSession.status === "working" ? handleCheckOut : handleCheckIn}
           onLanguageChange={setLanguage}
           onLogout={handleLogout}
+          onOpenProfile={() => setActivePage("profile")}
           t={t}
           user={user}
         />
@@ -201,7 +257,8 @@ export default function App() {
           />
         )}
         {activePage === "attendanceLogs" && <AttendanceLogsPage authToken={authToken} logs={logs} onLogsChange={setLogs} t={t} user={user} />}
-        {activePage !== "dashboard" && activePage !== "attendanceLogs" && (
+        {activePage === "profile" && <ProfilePage t={t} user={user} />}
+        {activePage !== "dashboard" && activePage !== "attendanceLogs" && activePage !== "profile" && (
           <section className="placeholder-page">
             <h3>{t[activePage]}</h3>
             <p>{t.pageComingSoon}</p>

@@ -1,3 +1,4 @@
+import { useState } from "react";
 import type { AppPage, User } from "../types";
 import type { Language, Translation } from "../i18n";
 import type { AttendanceSession } from "../types";
@@ -10,12 +11,14 @@ type TopbarProps = {
   language: Language;
   onLanguageChange: (language: Language) => void;
   onAttendanceAction: () => void;
+  onOpenProfile: () => void;
   user: User;
   onLogout: () => void;
   t: Translation;
 };
 
-export function Topbar({ activePage, attendanceSession, isAttendanceBusy, language, onAttendanceAction, onLanguageChange, user, onLogout, t }: TopbarProps) {
+export function Topbar({ activePage, attendanceSession, isAttendanceBusy, language, onAttendanceAction, onLanguageChange, onOpenProfile, user, onLogout, t }: TopbarProps) {
+  const [isAccountOpen, setIsAccountOpen] = useState(false);
   const isWorking = attendanceSession.status === "working";
   const actionLabel = isAttendanceBusy ? (isWorking ? t.checkingOut : t.checkingIn) : isWorking ? t.checkOut : t.checkIn;
 
@@ -43,12 +46,27 @@ export function Topbar({ activePage, attendanceSession, isAttendanceBusy, langua
           <LoginIcon />
           {actionLabel}
         </button>
-        <button className="avatar" type="button" aria-label={`${user.name} ${t.accountMenu}`}>
-          <span aria-hidden="true">{user.name.charAt(0)}</span>
-        </button>
-        <button className="text-button" type="button" onClick={onLogout}>
-          {t.logout}
-        </button>
+        <div className="account-menu-wrap">
+          <button className="avatar" type="button" aria-label={`${user.name} ${t.accountMenu}`} aria-expanded={isAccountOpen} onClick={() => setIsAccountOpen((current) => !current)}>
+            <span aria-hidden="true">{user.name.charAt(0)}</span>
+          </button>
+          {isAccountOpen && (
+            <div className="account-dropdown">
+              <button
+                type="button"
+                onClick={() => {
+                  onOpenProfile();
+                  setIsAccountOpen(false);
+                }}
+              >
+                {t.profile}
+              </button>
+              <button type="button" onClick={onLogout}>
+                {t.logout}
+              </button>
+            </div>
+          )}
+        </div>
       </div>
     </header>
   );
