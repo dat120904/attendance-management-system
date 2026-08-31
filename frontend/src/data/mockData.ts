@@ -1,13 +1,22 @@
 import type { DashboardData, User } from "../types";
+import { addDays, formatLogDate, formatSummaryDate, getNextThanksgiving } from "../utils/time";
 
 export const demoUsers: User[] = [
   {
     id: "u-employee",
-    name: "Alex",
+    name: "Đạt",
     email: "alex@workforce.local",
     role: "Employee",
-    subtitle: "Enterprise Admin",
+    subtitle: "Employee",
     remainingLeaveDays: 14
+  },
+  {
+    id: "u-team",
+    name: "Linh",
+    email: "linh@workforce.local",
+    role: "Employee",
+    subtitle: "Operations",
+    remainingLeaveDays: 11
   },
   {
     id: "u-manager",
@@ -35,7 +44,7 @@ export const demoUsers: User[] = [
   },
   {
     id: "u-admin",
-    name: "Alex",
+    name: "Đạt",
     email: "admin@workforce.local",
     role: "Admin",
     subtitle: "Enterprise Admin",
@@ -43,49 +52,101 @@ export const demoUsers: User[] = [
   }
 ];
 
+const today = new Date();
+const thanksgiving = getNextThanksgiving(today);
+const isoDate = (date: Date) => date.toISOString().slice(0, 10);
+
 export const dashboardData: DashboardData = {
   greeting: "Good morning",
-  summaryDate: "Thursday, October 26th",
+  summaryDate: formatSummaryDate(today, "en-US"),
   checkedInAt: "08:30 AM",
   sessionSeconds: 3 * 60 * 60 + 45 * 60 + 15,
   weeklyHours: 32.5,
   weeklyTarget: 40,
   nextHoliday: {
     name: "Thanksgiving",
-    dateRange: "Nov 23 - Nov 24"
+    dateRange: thanksgiving.toISOString()
   },
   logs: [
     {
       id: "log-1",
-      date: "Oct 25, Wed",
+      employeeId: "u-employee",
+      employeeName: "Đạt",
+      department: "Product",
+      managerId: "u-manager",
+      workDate: isoDate(today),
+      date: formatLogDate(today),
       checkIn: "08:25 AM",
       checkOut: "05:05 PM",
       totalHours: "8h 40m",
-      status: "On Time"
+      overtime: "0h 40m",
+      status: "On Time",
+      adjustmentStatus: "None",
+      payrollLocked: false
+    },
+    {
+      id: "log-5",
+      employeeId: "u-team",
+      employeeName: "Linh",
+      department: "Operations",
+      managerId: "u-manager",
+      workDate: isoDate(today),
+      date: formatLogDate(today),
+      checkIn: "08:10 AM",
+      checkOut: "04:20 PM",
+      totalHours: "8h 10m",
+      overtime: "0h 10m",
+      status: "Early Leave",
+      adjustmentStatus: "Pending",
+      payrollLocked: false
     },
     {
       id: "log-2",
-      date: "Oct 24, Tue",
+      employeeId: "u-manager",
+      employeeName: "Morgan",
+      department: "Operations",
+      managerId: "u-admin",
+      workDate: isoDate(addDays(today, -1)),
+      date: formatLogDate(addDays(today, -1)),
       checkIn: "08:45 AM",
       checkOut: "05:15 PM",
       totalHours: "8h 30m",
-      status: "Late"
+      overtime: "0h 30m",
+      status: "Late",
+      adjustmentStatus: "Pending",
+      payrollLocked: false
     },
     {
       id: "log-3",
-      date: "Oct 23, Mon",
+      employeeId: "u-hr",
+      employeeName: "Taylor",
+      department: "People",
+      managerId: "u-admin",
+      workDate: isoDate(addDays(today, -2)),
+      date: formatLogDate(addDays(today, -2)),
       checkIn: "08:30 AM",
       checkOut: "05:00 PM",
       totalHours: "8h 30m",
-      status: "On Time"
+      overtime: "0h 30m",
+      status: "On Time",
+      adjustmentStatus: "Approved",
+      payrollLocked: true
     },
     {
       id: "log-4",
-      date: "Oct 20, Fri",
+      employeeId: "u-payroll",
+      employeeName: "Jordan",
+      department: "Finance",
+      managerId: "u-admin",
+      workDate: isoDate(addDays(today, -3)),
+      date: formatLogDate(addDays(today, -3)),
       checkIn: "--",
       checkOut: "--",
       totalHours: "0h 0m",
-      status: "On Leave"
+      overtime: "0h 0m",
+      status: "On Leave",
+      adjustmentStatus: "None",
+      payrollLocked: true
     }
   ],
   managerAlerts: ["3 late arrivals this week", "1 missing check-out needs review"],

@@ -1,4 +1,4 @@
-import type { User } from "../types";
+import type { AppPage, User } from "../types";
 import type { Translation } from "../i18n";
 import { BuildingIcon } from "./icons";
 
@@ -16,11 +16,14 @@ const utilityItems = [
 ] as const;
 
 type SidebarProps = {
+  activePage: AppPage;
+  onNavigate: (page: AppPage) => void;
+  onLogout: () => void;
   user: User;
   t: Translation;
 };
 
-export function Sidebar({ user, t }: SidebarProps) {
+export function Sidebar({ activePage, onLogout, onNavigate, user, t }: SidebarProps) {
   return (
     <aside className="sidebar" aria-label="Main navigation">
       <div className="brand">
@@ -34,20 +37,20 @@ export function Sidebar({ user, t }: SidebarProps) {
       </div>
 
       <nav className="main-nav">
-        {navItems.map(([label, icon], index) => (
-          <a className={`nav-item ${index === 0 ? "active" : ""}`} href="#" aria-current={index === 0 ? "page" : undefined} key={label}>
+        {navItems.map(([label, icon]) => (
+          <button className={`nav-item ${activePage === label ? "active" : ""}`} type="button" aria-current={activePage === label ? "page" : undefined} key={label} onClick={() => onNavigate(label)}>
             <span className={`nav-icon ${icon}`} aria-hidden="true" />
             {t[label]}
-          </a>
+          </button>
         ))}
       </nav>
 
       <nav className="utility-nav" aria-label="Utility navigation">
         {utilityItems.map(([label, icon]) => (
-          <a className="nav-item" href="#" key={label}>
+          <button className={`nav-item ${activePage === label ? "active" : ""}`} type="button" key={label} onClick={label === "logout" ? onLogout : () => onNavigate(label)}>
             <span className={`nav-icon ${icon}`} aria-hidden="true" />
             {t[label]}
-          </a>
+          </button>
         ))}
       </nav>
     </aside>

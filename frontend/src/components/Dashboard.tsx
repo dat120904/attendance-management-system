@@ -1,22 +1,51 @@
 import { useEffect, useMemo, useState } from "react";
 import { dashboardData } from "../data/mockData";
 import type { Translation } from "../i18n";
-import type { DashboardMetric, User } from "../types";
-import { formatDuration } from "../utils/time";
-import { ClockIcon, HolidayIcon, LeaveIcon, LogoutIcon, WarningIcon } from "./icons";
+import type { AttendanceLog, AttendanceSession, DashboardMetric, User } from "../types";
+import { addDays, formatClockTime, formatDuration, formatHolidayRange, formatSummaryDate } from "../utils/time";
+import { ClockIcon, HolidayIcon, LeaveIcon, LoginIcon, LogoutIcon, WarningIcon } from "./icons";
 
 type DashboardProps = {
+  attendanceError: string;
+  attendanceMessage: string;
+  attendanceSession: AttendanceSession;
+  isAttendanceBusy: boolean;
+  logs: AttendanceLog[];
+  onCheckIn: () => void;
+  onCheckOut: () => void;
   user: User;
   t: Translation;
 };
 
-export function Dashboard({ user, t }: DashboardProps) {
-  const [seconds, setSeconds] = useState(dashboardData.sessionSeconds);
+export function Dashboard({
+  attendanceError,
+  attendanceMessage,
+  attendanceSession,
+  isAttendanceBusy,
+  logs,
+  onCheckIn,
+  onCheckOut,
+  user,
+  t
+}: DashboardProps) {
+  const [seconds, setSeconds] = useState(attendanceSession.elapsedSeconds);
+  const locale = t.language === "Ngôn ngữ" ? "vi-VN" : "en-US";
+  const today = useMemo(() => new Date(), []);
+  const holidayStartDate = useMemo(() => new Date(dashboardData.nextHoliday.dateRange), []);
+  const holidayEndDate = useMemo(() => addDays(holidayStartDate, 1), [holidayStartDate]);
+  const summaryDate = formatSummaryDate(today, locale);
+  const holidayDateRange = formatHolidayRange(holidayStartDate, holidayEndDate, locale);
+  const greeting = getGreeting(today, t);
 
   useEffect(() => {
+    setSeconds(attendanceSession.elapsedSeconds);
+  }, [attendanceSession.elapsedSeconds, attendanceSession.status]);
+
+  useEffect(() => {
+    if (attendanceSession.status !== "working") return;
     const interval = window.setInterval(() => setSeconds((current) => current + 1), 1000);
     return () => window.clearInterval(interval);
-  }, []);
+  }, [attendanceSession.status]);
 
   const metrics = useMemo<DashboardMetric[]>(() => {
     const base: DashboardMetric[] = [
@@ -36,7 +65,7 @@ export function Dashboard({ user, t }: DashboardProps) {
       {
         label: t.nextHoliday,
         value: t.thanksgiving,
-        helper: t.holidayDate,
+        helper: t.holidayDate.replace("{date}", holidayDateRange),
         icon: "holiday"
       }
     ];
@@ -61,7 +90,15 @@ export function Dashboard({ user, t }: DashboardProps) {
     }
 
     return base;
-  }, [t, user]);
+  }, [holidayDateRange, t, user]);
+
+  const roleOverview = getRoleOverview(user.role, t);
+  const actionCards = getActionCards(user.role, t);
+  const isWorking = attendanceSession.status === "working";
+  const sessionAction = isWorking ? onCheckOut : onCheckIn;
+  const sessionActionLabel = isAttendanceBusy ? (isWorking ? t.checkingOut : t.checkingIn) : isWorking ? t.checkOut : t.checkIn;
+  const sessionStatusLabel = getSessionStatusLabel(attendanceSession.status, t);
+  const checkedInLabel = attendanceSession.checkInAt ? `${t.checkedInAtPrefix} ${formatClockTime(attendanceSession.checkInAt)}` : t.readyToStart;
 
   return (
     <>
@@ -69,22 +106,33 @@ export function Dashboard({ user, t }: DashboardProps) {
         <article className="hero-card">
           <div>
             <h3>
-              {t.goodMorning}, {user.name}.
+              {greeting}, {user.name}.
             </h3>
-            <p>{t.dashboardSummary}</p>
+            <p>{t.dashboardSummary.replace("{date}", summaryDate)}</p>
           </div>
 
           <div className="session-card">
             <div className="session-copy">
               <span>{t.currentSession}</span>
-              <strong>{formatDuration(seconds)}</strong>
-              <p>{t.checkedInAt}</p>
+              <strong>{isWorking || attendanceSession.status === "checked-out" ? formatDuration(seconds) : "00:00:00"}</strong>
+              <p>{checkedInLabel}</p>
+              <div className="session-meta">
+                <span className={`session-status ${attendanceSession.status}`}>{sessionStatusLabel}</span>
+                <small>{t.device}: {attendanceSession.device}</small>
+                <small>{t.ipAddress}: {attendanceSession.ipAddress}</small>
+                <small>{t.location}: {attendanceSession.location}</small>
+              </div>
             </div>
-            <button className="checkout-button" type="button">
-              <LogoutIcon />
-              {t.checkOut}
+            <button className="checkout-button" type="button" onClick={sessionAction} disabled={isAttendanceBusy}>
+              {isWorking ? <LogoutIcon /> : <LoginIcon />}
+              {sessionActionLabel}
             </button>
           </div>
+          {(attendanceMessage || attendanceError) && (
+            <div className={`attendance-toast ${attendanceError ? "error" : "success"}`} role="status">
+              {attendanceError || attendanceMessage}
+            </div>
+          )}
         </article>
 
         <aside className="stats-column" aria-label={t.quickStats}>
@@ -117,6 +165,32 @@ export function Dashboard({ user, t }: DashboardProps) {
         </aside>
       </section>
 
+      <section className="dashboard-panels" aria-label={t.roleOverview}>
+        <article className="overview-card">
+          <div>
+            <span>{t.roleOverview}</span>
+            <h3>{roleOverview.title}</h3>
+            <p>{roleOverview.description}</p>
+          </div>
+          <strong>{user.role}</strong>
+        </article>
+
+        <div className="action-grid">
+          {actionCards.map((card) => (
+            <article className="action-card" key={card.label}>
+              <div className="action-card-top">
+                <span>{card.label}</span>
+                <MetricIcon icon={card.icon} />
+              </div>
+              <p>
+                <strong>{card.value}</strong> {card.suffix}
+              </p>
+              <a href="#">{t.reviewNow}</a>
+            </article>
+          ))}
+        </div>
+      </section>
+
       <section className="logs-card" aria-label={t.recentLogs}>
         <div className="section-header">
           <h3>{t.recentLogs}</h3>
@@ -135,7 +209,7 @@ export function Dashboard({ user, t }: DashboardProps) {
               </tr>
             </thead>
             <tbody>
-              {dashboardData.logs.map((log) => (
+              {logs.map((log) => (
                 <tr key={log.id}>
                   <td data-label={t.date}>{log.date}</td>
                   <td data-label={t.checkInColumn}>{log.checkIn}</td>
@@ -170,5 +244,150 @@ function statusClassName(status: string) {
 function translateStatus(status: string, t: Translation) {
   if (status === "On Time") return t.onTime;
   if (status === "Late") return t.late;
+  if (status === "Missing Check-out") return t.missingSession;
   return t.onLeave;
+}
+
+function getSessionStatusLabel(status: AttendanceSession["status"], t: Translation) {
+  if (status === "working") return t.working;
+  if (status === "checked-out") return t.checkedOut;
+  if (status === "missing") return t.missingSession;
+  return t.notStarted;
+}
+
+function getGreeting(date: Date, t: Translation) {
+  const hour = date.getHours();
+
+  if (hour < 12) return t.goodMorning;
+  if (hour < 18) return t.goodAfternoon;
+  return t.goodEvening;
+}
+
+function getRoleOverview(role: User["role"], t: Translation) {
+  if (role === "Manager") {
+    return {
+      title: t.managerDashboard,
+      description: t.dashboardScopeManager
+    };
+  }
+
+  if (role === "HR") {
+    return {
+      title: t.hrDashboard,
+      description: t.dashboardScopeHr
+    };
+  }
+
+  if (role === "Payroll") {
+    return {
+      title: t.payrollDashboard,
+      description: t.dashboardScopePayroll
+    };
+  }
+
+  if (role === "Admin") {
+    return {
+      title: t.adminDashboard,
+      description: t.dashboardScopeAdmin
+    };
+  }
+
+  return {
+    title: t.personalDashboard,
+    description: t.dashboardScopeEmployee
+  };
+}
+
+function getActionCards(role: User["role"], t: Translation): DashboardMetric[] {
+  const personalCards: DashboardMetric[] = [
+    {
+      label: t.upcomingLeave,
+      value: "2",
+      suffix: t.days,
+      icon: "leave"
+    },
+    {
+      label: t.attendanceExceptions,
+      value: "1",
+      suffix: t.items,
+      icon: "warning"
+    }
+  ];
+
+  if (role === "Employee") {
+    return personalCards;
+  }
+
+  if (role === "Manager") {
+    return [
+      {
+        label: t.pendingLeaveRequests,
+        value: "6",
+        suffix: t.requests,
+        icon: "leave"
+      },
+      {
+        label: t.lateArrivals,
+        value: "3",
+        suffix: t.people,
+        icon: "warning"
+      },
+      {
+        label: t.missingCheckOut,
+        value: "1",
+        suffix: t.items,
+        icon: "clock"
+      }
+    ];
+  }
+
+  if (role === "Payroll") {
+    return [
+      {
+        label: t.payrollReadiness,
+        value: "92%",
+        suffix: t.ready,
+        icon: "clock"
+      },
+      {
+        label: t.attendanceExceptions,
+        value: "8",
+        suffix: t.items,
+        icon: "warning"
+      },
+      {
+        label: t.overtimeAlerts,
+        value: "4",
+        suffix: t.items,
+        icon: "clock"
+      }
+    ];
+  }
+
+  return [
+    {
+      label: t.pendingLeaveRequests,
+      value: "18",
+      suffix: t.requests,
+      icon: "leave"
+    },
+    {
+      label: t.attendanceExceptions,
+      value: "12",
+      suffix: t.items,
+      icon: "warning"
+    },
+    {
+      label: t.missingCheckOut,
+      value: "5",
+      suffix: t.items,
+      icon: "clock"
+    },
+    {
+      label: t.overtimeAlerts,
+      value: "7",
+      suffix: t.items,
+      icon: "clock"
+    }
+  ];
 }
