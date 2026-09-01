@@ -1,4 +1,4 @@
-import type { AttendanceLog, User } from "./types";
+import type { AttendanceLog, LeaveAttachment, LeaveRequest, LeaveType, LeaveWorkflowConfig, User } from "./types";
 
 const API_BASE_URL = import.meta.env.VITE_API_URL ?? "http://localhost:4000";
 
@@ -13,6 +13,21 @@ type LogsResponse = {
 
 type LogResponse = {
   log: AttendanceLog;
+};
+
+type LeaveRequestsResponse = {
+  requests: LeaveRequest[];
+};
+
+type LeaveRequestResponse = {
+  request: LeaveRequest;
+  attendanceLog?: AttendanceLog;
+  attendanceLogs?: AttendanceLog[];
+  employeeRemainingLeaveDays?: number;
+};
+
+type LeaveWorkflowResponse = {
+  workflow: LeaveWorkflowConfig;
 };
 
 type AuditLogsResponse = {
@@ -79,6 +94,80 @@ export async function downloadAttendanceExport(token: string, params: { format: 
   }
 
   return response.blob();
+}
+
+export async function fetchLeaveRequests(token: string) {
+  return request<LeaveRequestsResponse>("/api/leave-requests", {
+    token
+  });
+}
+
+export async function createLeaveRequest(token: string, form: { type: LeaveType; startDate: string; endDate: string; reason: string; attachmentName: string; attachment?: LeaveAttachment; attachmentFile?: File | null; submitMode?: "draft" | "submit" }) {
+  const body = new FormData();
+  body.append("type", form.type);
+  body.append("startDate", form.startDate);
+  body.append("endDate", form.endDate);
+  body.append("reason", form.reason);
+  body.append("attachmentName", form.attachmentName);
+  body.append("submitMode", form.submitMode ?? "submit");
+  if (form.attachmentFile) body.append("attachment", form.attachmentFile);
+
+  const response = await fetch(`${API_BASE_URL}/api/leave-requests`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}` },
+    body
+  });
+
+  if (!response.ok) {
+    throw new Error(await getErrorMessage(response));
+  }
+
+  return response.json() as Promise<LeaveRequestResponse>;
+}
+
+export async function decideLeaveRequest(token: string, requestId: string, decision: "approve" | "reject") {
+  return request<LeaveRequestResponse>(`/api/leave-requests/${requestId}/${decision}`, {
+    method: "POST",
+    token
+  });
+}
+
+export async function submitLeaveRequest(token: string, requestId: string) {
+  return request<LeaveRequestResponse>(`/api/leave-requests/${requestId}/submit`, {
+    method: "POST",
+    token
+  });
+}
+
+export async function cancelLeaveRequest(token: string, requestId: string) {
+  return request<LeaveRequestResponse>(`/api/leave-requests/${requestId}/cancel`, {
+    method: "POST",
+    token
+  });
+}
+
+export async function downloadLeaveAttachment(token: string, attachmentUrl: string) {
+  const response = await fetch(`${API_BASE_URL}${attachmentUrl}`, {
+    headers: { Authorization: `Bearer ${token}` }
+  });
+
+  if (!response.ok) {
+    throw new Error(await getErrorMessage(response));
+  }
+
+  return response.blob();
+}
+
+export async function fetchLeaveWorkflow(token: string) {
+  return request<LeaveWorkflowResponse>("/api/leave-workflow", { token });
+}
+
+export async function updateLeaveWorkflow(token: string, workflow: LeaveWorkflowConfig) {
+  return request<LeaveWorkflowResponse>("/api/leave-workflow", {
+    method: "PUT",
+    token,
+    body: JSON.stringify(workflow)
+  });
 }
 
 async function request<T>(path: string, options: RequestInit & { token?: string } = {}) {

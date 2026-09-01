@@ -1,0 +1,8 @@
+﻿DON XIN NGHI PHEP - FILE DINH KEM MAU
+
+Nhan vien: Dat
+Loai nghi: Phep nam
+Ngay nghi: 2026-09-10 den 2026-09-11
+Ly do: File mau dung de test upload tai lieu dinh kem trong Workforce Pro.
+
+Neu tai file nay len don nghi va tai lai duoc noi dung nay, chuc nang upload/download da hoat dong.

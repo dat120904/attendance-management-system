@@ -2,14 +2,15 @@ import { useState } from "react";
 import { AttendanceLogsPage } from "./components/AttendanceLogsPage";
 import { AuthPage } from "./components/AuthPage";
 import { Dashboard } from "./components/Dashboard";
+import { LeaveRequestsPage } from "./components/LeaveRequestsPage";
 import { ProfilePage } from "./components/ProfilePage";
 import { Sidebar } from "./components/Sidebar";
 import { Topbar } from "./components/Topbar";
 import { loginWithPassword, registerAccount } from "./api";
-import { dashboardData, demoUsers } from "./data/mockData";
+import { dashboardData, demoUsers, leaveRequests as initialLeaveRequests, leaveWorkflowConfig as initialLeaveWorkflowConfig } from "./data/mockData";
 import type { Language } from "./i18n";
 import { translations } from "./i18n";
-import type { AppPage, AttendanceLog, AttendanceSession, User } from "./types";
+import type { AppPage, AttendanceLog, AttendanceSession, LeaveRequest, LeaveWorkflowConfig, User } from "./types";
 import { formatClockTime, formatLogDate, formatTotalHours } from "./utils/time";
 
 export default function App() {
@@ -29,6 +30,8 @@ export default function App() {
     location: ""
   });
   const [logs, setLogs] = useState<AttendanceLog[]>(dashboardData.logs);
+  const [leaveRequests, setLeaveRequests] = useState<LeaveRequest[]>(initialLeaveRequests);
+  const [leaveWorkflowConfig, setLeaveWorkflowConfig] = useState<LeaveWorkflowConfig>(initialLeaveWorkflowConfig);
   const [attendanceMessage, setAttendanceMessage] = useState("");
   const [attendanceError, setAttendanceError] = useState("");
   const [isAttendanceBusy, setIsAttendanceBusy] = useState(false);
@@ -257,8 +260,21 @@ export default function App() {
           />
         )}
         {activePage === "attendanceLogs" && <AttendanceLogsPage authToken={authToken} logs={logs} onLogsChange={setLogs} t={t} user={user} />}
+        {activePage === "leaveRequests" && (
+          <LeaveRequestsPage
+            authToken={authToken}
+            requests={leaveRequests}
+            workflowConfig={leaveWorkflowConfig}
+            onRequestsChange={setLeaveRequests}
+            onWorkflowConfigChange={setLeaveWorkflowConfig}
+            onAttendanceLogsCreated={(createdLogs) => setLogs((current) => [...createdLogs, ...current])}
+            onUserChange={setUser}
+            t={t}
+            user={user}
+          />
+        )}
         {activePage === "profile" && <ProfilePage t={t} user={user} />}
-        {activePage !== "dashboard" && activePage !== "attendanceLogs" && activePage !== "profile" && (
+        {activePage !== "dashboard" && activePage !== "attendanceLogs" && activePage !== "leaveRequests" && activePage !== "profile" && (
           <section className="placeholder-page">
             <h3>{t[activePage]}</h3>
             <p>{t.pageComingSoon}</p>

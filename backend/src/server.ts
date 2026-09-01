@@ -1,10 +1,14 @@
+import { createReadStream, existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { createServer, IncomingMessage, ServerResponse } from "node:http";
-import { activeAttendanceSessions, attendanceLogs, auditLogs, users } from "./data.js";
-import type { AttendanceLog } from "./types.js";
+import { join, resolve } from "node:path";
+import { activeAttendanceSessions, attendanceLogs, auditLogs, leaveRequests, leaveWorkflowConfig, users } from "./data.js";
+import type { AttendanceLog, LeaveAttachment, LeaveRequest, LeaveType, LeaveWorkflowConfig } from "./types.js";
 import { getUserByToken, login, logout, publicUser, registerAccount } from "./auth.js";
 import type { UserRole } from "./types.js";
 
 const port = Number(process.env.PORT ?? 4000);
+const uploadRoot = resolve(process.cwd(), "uploads", "leave-attachments");
+const maxAttachmentBytes = 10 * 1024 * 1024;
 
 const server = createServer(async (request, response) => {
   setCorsHeaders(response);
@@ -188,6 +192,202 @@ const server = createServer(async (request, response) => {
       return;
     }
 
+    if (request.method === "GET" && request.url?.startsWith("/api/leave-attachments/")) {
+      const user = requireUser(request, response);
+      if (!user) return;
+
+      const storageKey = decodeURIComponent(request.url.split("/").pop() ?? "");
+      const leaveRequest = leaveRequests.find((item) => item.attachment?.storageKey === storageKey);
+      if (!leaveRequest || !getRoleScopedLeaveRequests([leaveRequest], user).length) {
+        sendJson(response, 403, { error: "Forbidden" });
+        return;
+      }
+
+      const filePath = resolve(uploadRoot, storageKey);
+      if (!filePath.startsWith(uploadRoot) || !existsSync(filePath)) {
+        sendJson(response, 404, { error: "Attachment not found" });
+        return;
+      }
+
+      response.writeHead(200, {
+        "Content-Type": leaveRequest.attachment?.mimeType ?? "application/octet-stream",
+        "Content-Disposition": `attachment; filename="${encodeURIComponent(leaveRequest.attachment?.name ?? "attachment")}"`
+      });
+      createReadStream(filePath).pipe(response);
+      return;
+    }
+
+    if (request.method === "GET" && request.url === "/api/leave-workflow") {
+      const user = requireUser(request, response);
+      if (!user) return;
+
+      sendJson(response, 200, { workflow: leaveWorkflowConfig });
+      return;
+    }
+
+    if (request.method === "PUT" && request.url === "/api/leave-workflow") {
+      const user = requireUser(request, response);
+      if (!user) return;
+
+      if (user.role !== "Admin") {
+        sendJson(response, 403, { error: "Forbidden" });
+        return;
+      }
+
+      const body = await readJsonBody<Partial<LeaveWorkflowConfig>>(request);
+      updateLeaveWorkflowConfig(body);
+      addAudit(user.id, "leave.workflow.updated", "leave-workflow");
+      sendJson(response, 200, { workflow: leaveWorkflowConfig });
+      return;
+    }
+
+    if (request.method === "GET" && request.url === "/api/leave-requests") {
+      const user = requireUser(request, response);
+      if (!user) return;
+
+      sendJson(response, 200, { requests: getRoleScopedLeaveRequests(leaveRequests, user) });
+      return;
+    }
+
+    if (request.method === "POST" && request.url === "/api/leave-requests") {
+      const user = requireUser(request, response);
+      if (!user) return;
+      if (user.role === "Payroll") {
+        sendJson(response, 403, { error: "Forbidden" });
+        return;
+      }
+
+      const body = request.headers["content-type"]?.startsWith("multipart/form-data")
+        ? await readMultipartLeaveBody(request, request.headers["content-type"], user.id)
+        : await readJsonBody<{ type?: LeaveType; startDate?: string; endDate?: string; reason?: string; attachmentName?: string; attachment?: LeaveAttachment; submitMode?: "draft" | "submit" }>(request);
+      const validationError = validateLeaveRequestBody(body, user.id, undefined, body.submitMode === "draft");
+      if (validationError) {
+        sendJson(response, 400, { error: validationError });
+        return;
+      }
+
+      const days = calculateLeaveDays(body.startDate ?? "", body.endDate ?? "");
+      if (body.submitMode !== "draft" && leaveWorkflowConfig.annualLeaveRequiresBalance && body.type === "Annual Leave" && days > user.remainingLeaveDays) {
+        sendJson(response, 409, { error: "Leave request exceeds remaining balance" });
+        return;
+      }
+
+      if (body.submitMode !== "draft" && hasLeaveOverlap(leaveRequests, user.id, body.startDate ?? "", body.endDate ?? "")) {
+        sendJson(response, 409, { error: "Leave request overlaps with an existing request" });
+        return;
+      }
+
+      const requestItem: LeaveRequest = {
+        id: `leave-${Date.now()}`,
+        employeeId: user.id,
+        employeeName: user.name,
+        department: roleDepartment(user.role),
+        managerId: user.role === "Manager" ? "u-admin" : "u-manager",
+        type: body.type ?? "Annual Leave",
+        startDate: body.startDate ?? "",
+        endDate: body.endDate ?? "",
+        days,
+        reason: body.reason?.trim() ?? "",
+        attachmentName: body.attachment?.name?.trim() || body.attachmentName?.trim() || "",
+        attachment: normalizeAttachment(body.attachment, user.id),
+        status: body.submitMode === "draft" ? "Draft" : "Pending Manager",
+        createdAt: new Date().toISOString()
+      };
+
+      leaveRequests.unshift(requestItem);
+      addAudit(user.id, requestItem.status === "Draft" ? "leave.request.draft_saved" : "leave.request.created", requestItem.id);
+      sendJson(response, 201, { request: requestItem });
+      return;
+    }
+
+    if (request.method === "POST" && request.url?.match(/^\/api\/leave-requests\/[^/]+\/submit$/)) {
+      const user = requireUser(request, response);
+      if (!user) return;
+
+      const requestId = request.url.split("/")[3];
+      const requestItem = leaveRequests.find((item) => item.id === requestId);
+      if (!requestItem || requestItem.employeeId !== user.id || requestItem.status !== "Draft") {
+        sendJson(response, 403, { error: "Forbidden" });
+        return;
+      }
+
+      const validationError = validateLeaveRequestBody(requestItem, user.id, requestItem.id, false);
+      if (validationError) {
+        sendJson(response, 400, { error: validationError });
+        return;
+      }
+
+      if (leaveWorkflowConfig.annualLeaveRequiresBalance && requestItem.type === "Annual Leave" && requestItem.days > user.remainingLeaveDays) {
+        sendJson(response, 409, { error: "Leave request exceeds remaining balance" });
+        return;
+      }
+
+      if (hasLeaveOverlap(leaveRequests, user.id, requestItem.startDate, requestItem.endDate, requestItem.id)) {
+        sendJson(response, 409, { error: "Leave request overlaps with an existing request" });
+        return;
+      }
+
+      requestItem.status = "Pending Manager";
+      addAudit(user.id, "leave.request.submitted", requestItem.id);
+      sendJson(response, 200, { request: requestItem });
+      return;
+    }
+
+    if (request.method === "POST" && request.url?.match(/^\/api\/leave-requests\/[^/]+\/cancel$/)) {
+      const user = requireUser(request, response);
+      if (!user) return;
+
+      const requestId = request.url.split("/")[3];
+      const requestItem = leaveRequests.find((item) => item.id === requestId);
+      if (!requestItem || !canCancelLeaveRequest(user, requestItem)) {
+        sendJson(response, 403, { error: "Forbidden" });
+        return;
+      }
+
+      requestItem.status = "Cancelled";
+      addAudit(user.id, "leave.request.cancelled", requestItem.id);
+      sendJson(response, 200, { request: requestItem });
+      return;
+    }
+
+    if (request.method === "POST" && request.url?.match(/^\/api\/leave-requests\/[^/]+\/(approve|reject)$/)) {
+      const user = requireUser(request, response);
+      if (!user) return;
+
+      const [, , , requestId, action] = request.url.split("/");
+      const requestItem = leaveRequests.find((item) => item.id === requestId);
+      if (!requestItem || !canApproveLeaveRequest(user, requestItem)) {
+        sendJson(response, 403, { error: "Forbidden" });
+        return;
+      }
+
+      if (action === "reject") {
+        requestItem.status = "Rejected";
+        addAudit(user.id, "leave.request.rejected", requestItem.id);
+        sendJson(response, 200, { request: requestItem });
+        return;
+      }
+
+      if (requestItem.status === "Pending Manager" && user.role === "Manager" && leaveWorkflowConfig.requireHrApproval) {
+        requestItem.status = "Pending HR";
+        addAudit(user.id, "leave.request.manager_approved", requestItem.id);
+        sendJson(response, 200, { request: requestItem });
+        return;
+      }
+
+      requestItem.status = "Approved";
+      const employee = users.find((item) => item.id === requestItem.employeeId);
+      if (employee && leaveWorkflowConfig.annualLeaveRequiresBalance && requestItem.type === "Annual Leave") {
+        employee.remainingLeaveDays = Math.max(0, employee.remainingLeaveDays - requestItem.days);
+      }
+
+      const generatedLogs = createLeaveAttendanceLogs(requestItem);
+      attendanceLogs.unshift(...generatedLogs);
+      addAudit(user.id, "leave.request.final_approved", requestItem.id);
+      sendJson(response, 200, { request: requestItem, attendanceLog: generatedLogs[0], attendanceLogs: generatedLogs, employeeRemainingLeaveDays: employee?.remainingLeaveDays });
+      return;
+    }
+
     if (request.method === "GET" && request.url?.startsWith("/api/attendance/export")) {
       const user = requireUser(request, response);
       if (!user) return;
@@ -308,6 +508,79 @@ function validateRegisterBody(body: { name?: string; email?: string; role?: User
   if (body.password.length < 6) return "Password must be at least 6 characters";
   if (body.password !== body.confirmPassword) return "Passwords do not match";
   return "";
+}
+
+function validateLeaveRequestBody(body: { type?: LeaveType; startDate?: string; endDate?: string; attachmentName?: string; attachment?: LeaveAttachment }, employeeId: string, ignoredRequestId?: string, allowDraft = false) {
+  const allowedTypes: LeaveType[] = ["Annual Leave", "Sick Leave", "Unpaid Leave", "Compensatory Leave"];
+  if (!body.type || !allowedTypes.includes(body.type)) return "Invalid leave type";
+  if (!body.startDate || !body.endDate) return "Leave dates are required";
+  if (calculateLeaveDays(body.startDate, body.endDate) <= 0) return "Invalid leave date range";
+  if (leaveWorkflowConfig.attachmentRequiredForSickLeave && body.type === "Sick Leave" && !body.attachmentName && !body.attachment?.name) return "Attachment is required for sick leave";
+  if (!allowDraft && hasLeaveOverlap(leaveRequests, employeeId, body.startDate, body.endDate, ignoredRequestId)) return "Leave request overlaps with an existing request";
+  return "";
+}
+
+function getRoleScopedLeaveRequests(requests: LeaveRequest[], user: { id: string; role: string }) {
+  if (user.role === "Employee") return requests.filter((request) => request.employeeId === user.id);
+  if (user.role === "Manager") return requests.filter((request) => request.managerId === user.id || request.employeeId === user.id);
+  if (user.role === "Payroll") return requests.filter((request) => request.status === "Approved");
+  return requests;
+}
+
+function canCancelLeaveRequest(user: { id: string; role: string }, request: LeaveRequest) {
+  if (user.role === "Admin") return request.status !== "Approved";
+  if (request.employeeId !== user.id) return false;
+  if (request.status === "Draft") return true;
+  return leaveWorkflowConfig.allowEmployeeCancelBeforeManager && request.status === "Pending Manager";
+}
+
+function canApproveLeaveRequest(user: { id: string; role: string }, request: LeaveRequest) {
+  if (user.role === "Admin") return request.status === "Pending Manager" || request.status === "Pending HR";
+  if (request.status === "Pending Manager") return user.role === "Manager" && request.managerId === user.id;
+  if (request.status === "Pending HR") return user.role === "HR";
+  return false;
+}
+
+function calculateLeaveDays(startDate: string, endDate: string) {
+  const start = new Date(`${startDate}T00:00:00`);
+  const end = new Date(`${endDate}T00:00:00`);
+  if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime()) || end < start) return 0;
+  return Math.floor((end.getTime() - start.getTime()) / 86400000) + 1;
+}
+
+function hasLeaveOverlap(requests: LeaveRequest[], employeeId: string, startDate: string, endDate: string, ignoredRequestId?: string) {
+  const start = new Date(`${startDate}T00:00:00`).getTime();
+  const end = new Date(`${endDate}T00:00:00`).getTime();
+  return requests.some((request) => {
+    if (request.id === ignoredRequestId || request.employeeId !== employeeId || request.status === "Rejected" || request.status === "Cancelled") return false;
+    const requestStart = new Date(`${request.startDate}T00:00:00`).getTime();
+    const requestEnd = new Date(`${request.endDate}T00:00:00`).getTime();
+    return start <= requestEnd && end >= requestStart;
+  });
+}
+
+function createLeaveAttendanceLogs(request: LeaveRequest): AttendanceLog[] {
+  return Array.from({ length: request.days }, (_, index) => {
+    const date = new Date(`${request.startDate}T00:00:00`);
+    date.setDate(date.getDate() + index);
+    const workDate = date.toISOString().slice(0, 10);
+    return {
+      id: `leave-log-${request.id}-${index + 1}`,
+      employeeId: request.employeeId,
+      employeeName: request.employeeName,
+      department: request.department,
+      managerId: request.managerId,
+      workDate,
+      date: formatLogDate(date),
+      checkIn: "--",
+      checkOut: "--",
+      totalHours: "0h 0m",
+      overtime: "0h 0m",
+      status: "On Leave",
+      adjustmentStatus: "None",
+      payrollLocked: false
+    };
+  });
 }
 
 function getRoleScopedLogs(logs: AttendanceLog[], user: { id: string; name: string; role: string }) {
@@ -499,6 +772,30 @@ function escapePdfText(value: string) {
     .replace(/\)/g, "\\)");
 }
 
+function updateLeaveWorkflowConfig(body: Partial<LeaveWorkflowConfig>) {
+  if (typeof body.requireHrApproval === "boolean") leaveWorkflowConfig.requireHrApproval = body.requireHrApproval;
+  if (typeof body.annualLeaveRequiresBalance === "boolean") leaveWorkflowConfig.annualLeaveRequiresBalance = body.annualLeaveRequiresBalance;
+  if (typeof body.allowEmployeeCancelBeforeManager === "boolean") leaveWorkflowConfig.allowEmployeeCancelBeforeManager = body.allowEmployeeCancelBeforeManager;
+  if (typeof body.attachmentRequiredForSickLeave === "boolean") leaveWorkflowConfig.attachmentRequiredForSickLeave = body.attachmentRequiredForSickLeave;
+  if (typeof body.defaultAnnualLeaveDays === "number" && Number.isFinite(body.defaultAnnualLeaveDays)) {
+    leaveWorkflowConfig.defaultAnnualLeaveDays = Math.max(0, Math.floor(body.defaultAnnualLeaveDays));
+  }
+}
+
+function normalizeAttachment(attachment: LeaveAttachment | undefined, actorId: string) {
+  if (!attachment?.name) return undefined;
+  return {
+    name: attachment.name.trim(),
+    mimeType: attachment.mimeType || "application/octet-stream",
+    size: Math.max(0, Number(attachment.size) || 0),
+    url: attachment.url,
+    storageKey: attachment.storageKey,
+    dataUrl: attachment.dataUrl,
+    uploadedAt: attachment.uploadedAt || new Date().toISOString(),
+    uploadedBy: attachment.uploadedBy || actorId
+  };
+}
+
 function addAudit(actorId: string, action: string, targetId: string) {
   auditLogs.unshift({
     id: `audit-${Date.now()}`,
@@ -583,6 +880,84 @@ function formatTotalHours(totalSeconds: number) {
   const minutes = Math.floor((totalSeconds % 3600) / 60);
 
   return `${hours}h ${minutes}m`;
+}
+
+async function readMultipartLeaveBody(request: IncomingMessage, contentType: string | undefined, actorId: string) {
+  const boundary = contentType?.match(/boundary=(?:(?:"([^"]+)")|([^;]+))/)?.[1] ?? contentType?.match(/boundary=(?:(?:"([^"]+)")|([^;]+))/)?.[2];
+  if (!boundary) throw new Error("Missing multipart boundary");
+
+  const buffer = await readRawBody(request);
+  if (buffer.length > maxAttachmentBytes + 1024 * 128) throw new Error("Request body is too large");
+
+  const body: { type?: LeaveType; startDate?: string; endDate?: string; reason?: string; attachmentName?: string; attachment?: LeaveAttachment; submitMode?: "draft" | "submit" } = {};
+  const raw = buffer.toString("latin1");
+  const parts = raw.split(`--${boundary}`).slice(1, -1);
+
+  for (const rawPart of parts) {
+    const part = rawPart.replace(/^\r\n/, "").replace(/\r\n$/, "");
+    const headerEnd = part.indexOf("\r\n\r\n");
+    if (headerEnd === -1) continue;
+
+    const headerText = part.slice(0, headerEnd);
+    let value = part.slice(headerEnd + 4);
+    if (value.endsWith("\r\n")) value = value.slice(0, -2);
+
+    const name = headerText.match(/name="([^"]+)"/)?.[1];
+    const filename = headerText.match(/filename="([^"]*)"/)?.[1];
+    const mimeType = headerText.match(/Content-Type:\s*([^\r\n]+)/i)?.[1]?.trim() ?? "application/octet-stream";
+    if (!name) continue;
+
+    if (filename) {
+      const fileBuffer = Buffer.from(value, "latin1");
+      if (fileBuffer.length > maxAttachmentBytes) throw new Error("Attachment is too large");
+
+      mkdirSync(uploadRoot, { recursive: true });
+      const safeName = sanitizeFilename(filename);
+      const storageKey = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}-${safeName}`;
+      const filePath = join(uploadRoot, storageKey);
+      writeFileSync(filePath, fileBuffer);
+      body.attachmentName = safeName;
+      body.attachment = {
+        name: safeName,
+        mimeType,
+        size: fileBuffer.length,
+        storageKey,
+        url: `/api/leave-attachments/${encodeURIComponent(storageKey)}`,
+        uploadedAt: new Date().toISOString(),
+        uploadedBy: actorId
+      };
+      continue;
+    }
+
+    const textValue = Buffer.from(value, "latin1").toString("utf8");
+    if (name === "type") body.type = textValue as LeaveType;
+    if (name === "startDate") body.startDate = textValue;
+    if (name === "endDate") body.endDate = textValue;
+    if (name === "reason") body.reason = textValue;
+    if (name === "attachmentName") body.attachmentName = textValue;
+    if (name === "submitMode") body.submitMode = textValue === "draft" ? "draft" : "submit";
+  }
+
+  return body;
+}
+
+function sanitizeFilename(filename: string) {
+  const fallback = "attachment";
+  return filename
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-zA-Z0-9._-]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 120) || fallback;
+}
+
+function readRawBody(request: IncomingMessage): Promise<Buffer> {
+  return new Promise((resolve, reject) => {
+    const chunks: Buffer[] = [];
+    request.on("data", (chunk: Buffer) => chunks.push(chunk));
+    request.on("end", () => resolve(Buffer.concat(chunks)));
+    request.on("error", reject);
+  });
 }
 
 function readJsonBody<T>(request: IncomingMessage): Promise<T> {

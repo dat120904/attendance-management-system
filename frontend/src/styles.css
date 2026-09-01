@@ -826,6 +826,16 @@ button {
   text-align: right;
 }
 
+.detail-link {
+  color: #1537ad;
+  font-weight: 800;
+  text-decoration: none;
+}
+
+.detail-link:hover {
+  text-decoration: underline;
+}
+
 .detail-actions button:disabled {
   cursor: not-allowed;
   opacity: 0.6;
@@ -1429,6 +1439,136 @@ td {
   border-radius: 6px;
 }
 
+.leave-page {
+  padding: 40px;
+}
+
+.leave-balance-card {
+  display: grid;
+  min-width: 150px;
+  padding: 14px 18px;
+  background: #fff;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  box-shadow: var(--shadow);
+}
+
+.leave-balance-card span,
+.leave-balance-card small {
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.leave-balance-card strong {
+  color: #111827;
+  font-size: 34px;
+  line-height: 1;
+}
+
+.leave-layout {
+  display: grid;
+  grid-template-columns: 360px minmax(0, 1fr) 320px;
+  gap: 24px;
+}
+
+.leave-side-panel {
+  display: grid;
+  gap: 18px;
+  align-content: start;
+}
+
+.leave-form-panel,
+.leave-list-panel {
+  display: grid;
+  align-content: start;
+  gap: 18px;
+  padding: 24px;
+  background: #fff;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  box-shadow: var(--shadow);
+}
+
+.leave-form-panel h4 {
+  margin: 0;
+  color: #111827;
+  font-size: 22px;
+}
+
+.leave-form-panel label {
+  display: grid;
+  gap: 8px;
+  color: #202637;
+  font-size: 14px;
+  font-weight: 800;
+}
+
+.leave-form-panel input,
+.leave-form-panel select,
+.leave-form-panel textarea {
+  width: 100%;
+  min-height: 46px;
+  padding: 0 12px;
+  color: #111827;
+  background: #fff;
+  border: 1px solid var(--line-strong);
+  border-radius: 6px;
+}
+
+.leave-form-panel textarea {
+  min-height: 96px;
+  padding: 12px;
+  resize: vertical;
+}
+
+.two-column-fields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.leave-form-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.workflow-panel {
+  border-color: #c8d5ff;
+}
+
+.toggle-row {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr);
+  align-items: start;
+}
+
+.toggle-row input {
+  width: 18px;
+  height: 18px;
+  min-height: 18px;
+  margin: 2px 0 0;
+}
+
+.leave-balance-preview {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px;
+  color: #34425f;
+  background: #f8fafc;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.leave-detail-card {
+  align-self: start;
+}
+
 @media (max-width: 1180px) {
   .app-shell {
     grid-template-columns: 96px minmax(0, 1fr);
@@ -1531,8 +1671,15 @@ td {
   }
 
   .profile-grid,
-  .profile-fields {
+  .profile-fields,
+  .leave-layout,
+  .two-column-fields,
+  .leave-form-actions {
     grid-template-columns: 1fr;
+  }
+
+  .leave-page {
+    padding: 24px 16px;
   }
 
   .hero-card {

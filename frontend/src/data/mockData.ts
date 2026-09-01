@@ -1,4 +1,4 @@
-import type { DashboardData, User } from "../types";
+﻿import type { DashboardData, LeaveRequest, LeaveWorkflowConfig, User } from "../types";
 import { addDays, formatLogDate, formatSummaryDate, getNextThanksgiving } from "../utils/time";
 
 export const demoUsers: User[] = [
@@ -152,3 +152,74 @@ export const dashboardData: DashboardData = {
   managerAlerts: ["3 late arrivals this week", "1 missing check-out needs review"],
   payrollReadiness: "92% ready"
 };
+
+export const leaveWorkflowConfig: LeaveWorkflowConfig = {
+  requireHrApproval: true,
+  annualLeaveRequiresBalance: true,
+  allowEmployeeCancelBeforeManager: true,
+  attachmentRequiredForSickLeave: false,
+  defaultAnnualLeaveDays: 12
+};
+
+export const leaveRequests: LeaveRequest[] = [
+  {
+    id: "leave-demo-review",
+    employeeId: "u-employee",
+    employeeName: "Đạt",
+    department: "Product",
+    managerId: "u-manager",
+    type: "Annual Leave",
+    startDate: isoDate(addDays(today, 9)),
+    endDate: isoDate(addDays(today, 10)),
+    days: 2,
+    reason: "Demo request for review",
+    attachmentName: "leave-demo.pdf",
+    status: "Pending Manager",
+    createdAt: today.toISOString()
+  },
+  {
+    id: "leave-1",
+    employeeId: "u-employee",
+    employeeName: "Đạt",
+    department: "Product",
+    managerId: "u-manager",
+    type: "Annual Leave",
+    startDate: isoDate(addDays(today, 3)),
+    endDate: isoDate(addDays(today, 4)),
+    days: 2,
+    reason: "Family trip",
+    attachmentName: "",
+    status: "Pending Manager",
+    createdAt: today.toISOString()
+  },
+  {
+    id: "leave-2",
+    employeeId: "u-team",
+    employeeName: "Linh",
+    department: "Operations",
+    managerId: "u-manager",
+    type: "Sick Leave",
+    startDate: isoDate(addDays(today, 1)),
+    endDate: isoDate(addDays(today, 1)),
+    days: 1,
+    reason: "Medical appointment",
+    attachmentName: "medical-note.pdf",
+    status: "Pending HR",
+    createdAt: addDays(today, -1).toISOString()
+  },
+  {
+    id: "leave-3",
+    employeeId: "u-payroll",
+    employeeName: "Jordan",
+    department: "Finance",
+    managerId: "u-admin",
+    type: "Unpaid Leave",
+    startDate: isoDate(addDays(today, -3)),
+    endDate: isoDate(addDays(today, -3)),
+    days: 1,
+    reason: "Personal matter",
+    attachmentName: "",
+    status: "Approved",
+    createdAt: addDays(today, -5).toISOString()
+  }
+];
