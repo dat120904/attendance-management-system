@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { Session, User, UserRole } from "./types.js";
-import { users } from "./data.js";
+import { systemSettings, users } from "./data.js";
 
 const sessions = new Map<string, Session>();
 const passwords = new Map(users.map((user) => [user.email, "password"]));
@@ -22,7 +22,7 @@ export function login(email: string, password: string) {
   sessions.set(token, {
     token,
     userId: user.id,
-    expiresAt: Date.now() + sessionTtlMs
+    expiresAt: Date.now() + getSessionTtlMs()
   });
 
   return { token, user: publicUser(user) };
@@ -81,4 +81,8 @@ export function setUserPassword(email: string, password: string) {
 export function publicUser(user: User) {
   const { locked, ...safeUser } = user;
   return safeUser;
+}
+
+function getSessionTtlMs() {
+  return 1000 * 60 * Math.max(15, systemSettings.security.sessionTimeoutMinutes);
 }

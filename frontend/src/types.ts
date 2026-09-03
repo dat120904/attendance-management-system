@@ -69,6 +69,69 @@ export type LeaveWorkflowConfig = {
   defaultAnnualLeaveDays: number;
 };
 
+export type HolidaySetting = {
+  id: string;
+  name: string;
+  startDate: string;
+  endDate: string;
+  paid: boolean;
+};
+
+export type WorkScheduleSetting = {
+  id: string;
+  name: string;
+  startTime: string;
+  endTime: string;
+  breakMinutes: number;
+  workDays: number[];
+};
+
+export type SystemSettings = {
+  attendancePolicy: {
+    standardStartTime: string;
+    standardEndTime: string;
+    lateGraceMinutes: number;
+    earlyLeaveGraceMinutes: number;
+    overtimeAfterHours: number;
+    requireLocation: boolean;
+  };
+  leavePolicy: {
+    defaultAnnualLeaveDays: number;
+    attachmentRequiredForSickLeave: boolean;
+    requireHrApproval: boolean;
+    blockAnnualLeaveOverBalance: boolean;
+  };
+  workSchedules: WorkScheduleSetting[];
+  holidays: HolidaySetting[];
+  roles: Record<UserRole, string[]>;
+  notifications: {
+    inAppEnabled: boolean;
+    emailEnabled: boolean;
+    managerDigestEnabled: boolean;
+    payrollReminderEnabled: boolean;
+  };
+  payrollExport: {
+    defaultFormat: "excel" | "pdf";
+    includeWarnings: boolean;
+    lockRequiresResolvedLogs: boolean;
+  };
+  security: {
+    minPasswordLength: number;
+    sessionTimeoutMinutes: number;
+    allowSelfRegistration: boolean;
+    requireTwoFactor: boolean;
+  };
+  integrations: {
+    calendarProvider: string;
+    payrollProvider: string;
+    webhookUrl: string;
+  };
+  audit: {
+    enabled: boolean;
+    retentionDays: number;
+  };
+};
+
 export type LeaveStatus = "Draft" | "Pending Manager" | "Pending HR" | "Approved" | "Rejected" | "Cancelled";
 
 export type LeaveRequest = {

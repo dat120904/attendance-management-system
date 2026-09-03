@@ -1,4 +1,4 @@
-﻿import type { AttendanceLog, AttendanceSession, AuditLog, LeaveRequest, LeaveWorkflowConfig, PayrollPeriod, User } from "./types.js";
+﻿import type { AttendanceLog, AttendanceSession, AuditLog, LeaveRequest, LeaveWorkflowConfig, PayrollPeriod, SystemSettings, User } from "./types.js";
 
 export const users: User[] = [
   {
@@ -207,6 +207,30 @@ export const leaveWorkflowConfig: LeaveWorkflowConfig = {
   allowEmployeeCancelBeforeManager: true,
   attachmentRequiredForSickLeave: false,
   defaultAnnualLeaveDays: 12
+};
+
+export const systemSettings: SystemSettings = {
+  attendancePolicy: { standardStartTime: "08:30", standardEndTime: "17:00", lateGraceMinutes: 10, earlyLeaveGraceMinutes: 10, overtimeAfterHours: 8, requireLocation: true },
+  leavePolicy: { defaultAnnualLeaveDays: 12, attachmentRequiredForSickLeave: false, requireHrApproval: true, blockAnnualLeaveOverBalance: true },
+  workSchedules: [
+    { id: "schedule-standard", name: "Standard 8h", startTime: "08:30", endTime: "17:00", breakMinutes: 60, workDays: [1, 2, 3, 4, 5] },
+    { id: "schedule-flex", name: "Flexible", startTime: "09:00", endTime: "18:00", breakMinutes: 60, workDays: [1, 2, 3, 4, 5] }
+  ],
+  holidays: [
+    { id: "holiday-national-day", name: "National Day", startDate: "2026-09-02", endDate: "2026-09-02", paid: true }
+  ],
+  roles: {
+    Employee: ["profile:view", "attendance:self", "leave:create", "notification:self"],
+    Manager: ["team:view", "leave:approve-manager", "notification:team"],
+    HR: ["attendance:policy", "leave:policy", "holidays:manage", "employees:manage"],
+    Payroll: ["payroll:period", "payroll:export", "payroll:lock"],
+    Admin: ["settings:all", "roles:manage", "security:manage", "audit:view", "integrations:manage"]
+  },
+  notifications: { inAppEnabled: true, emailEnabled: true, managerDigestEnabled: true, payrollReminderEnabled: true },
+  payrollExport: { defaultFormat: "excel", includeWarnings: true, lockRequiresResolvedLogs: true },
+  security: { minPasswordLength: 6, sessionTimeoutMinutes: 480, allowSelfRegistration: true, requireTwoFactor: false },
+  integrations: { calendarProvider: "Google Calendar", payrollProvider: "Internal payroll", webhookUrl: "" },
+  audit: { enabled: true, retentionDays: 365 }
 };
 
 export const leaveRequests: LeaveRequest[] = [

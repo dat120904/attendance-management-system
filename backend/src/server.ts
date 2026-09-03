@@ -1,8 +1,8 @@
 ﻿import { createReadStream, existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { createServer, IncomingMessage, ServerResponse } from "node:http";
 import { join, resolve } from "node:path";
-import { activeAttendanceSessions, attendanceLogs, auditLogs, leaveRequests, leaveWorkflowConfig, payrollPeriods, users } from "./data.js";
-import type { AttendanceLog, LeaveAttachment, LeaveRequest, LeaveType, LeaveWorkflowConfig, PayrollPeriod, PayrollSummaryRow, User } from "./types.js";
+import { activeAttendanceSessions, attendanceLogs, auditLogs, leaveRequests, leaveWorkflowConfig, payrollPeriods, systemSettings, users } from "./data.js";
+import type { AttendanceLog, LeaveAttachment, LeaveRequest, LeaveType, LeaveWorkflowConfig, PayrollPeriod, PayrollSummaryRow, SystemSettings, User } from "./types.js";
 import { getUserByToken, login, logout, publicUser, registerAccount, setUserPassword } from "./auth.js";
 import type { UserRole } from "./types.js";
 
@@ -535,6 +535,38 @@ const server = createServer(async (request, response) => {
       return;
     }
 
+
+    if (request.method === "GET" && request.url === "/api/settings") {
+      const user = requireUser(request, response);
+      if (!user) return;
+
+      sendJson(response, 200, { settings: systemSettings });
+      return;
+    }
+
+    if (request.method === "PUT" && request.url === "/api/settings") {
+      const user = requireUser(request, response);
+      if (!user) return;
+
+      const body = await readJsonBody<Partial<SystemSettings>>(request);
+      const validationError = validateSystemSettings(body);
+      if (validationError) {
+        sendJson(response, 400, { error: validationError });
+        return;
+      }
+
+      const disallowedGroups = getChangedSettingGroups(systemSettings, body).filter((group) => !canEditSettingGroup(user.role, group));
+      if (disallowedGroups.length > 0) {
+        sendJson(response, 403, { error: "Forbidden" });
+        return;
+      }
+
+      updateSystemSettings(body);
+      addAudit(user.id, "settings.updated", disallowedGroups.length ? disallowedGroups.join(",") : "settings");
+      sendJson(response, 200, { settings: systemSettings });
+      return;
+    }
+
     if (request.method === "GET" && request.url === "/api/payroll/periods") {
       const user = requireUser(request, response);
       if (!user) return;
@@ -632,7 +664,7 @@ const server = createServer(async (request, response) => {
           return;
         }
         refreshPayrollPeriod(period, user.id, "pre-lock check");
-        if (period.warnings.length > 0) {
+        if (systemSettings.payrollExport.lockRequiresResolvedLogs && period.warnings.length > 0) {
           sendJson(response, 409, { error: "Payroll period has unresolved warnings", warnings: period.warnings });
           return;
         }
@@ -939,7 +971,9 @@ function countBusinessDays(startDate: string, endDate: string) {
   const end = new Date(`${endDate}T00:00:00`);
   while (cursor <= end) {
     const day = cursor.getDay();
-    if (day !== 0 && day !== 6) count += 1;
+    const isoDate = cursor.toISOString().slice(0, 10);
+    const isHoliday = systemSettings.holidays.some((holiday) => isoDate >= holiday.startDate && isoDate <= holiday.endDate);
+    if (day !== 0 && day !== 6 && !isHoliday) count += 1;
     cursor.setDate(cursor.getDate() + 1);
   }
   return count;
@@ -1080,7 +1114,7 @@ function validateRegisterBody(body: { name?: string; email?: string; role?: User
   if (!body.name?.trim() || !body.email?.trim() || !body.password || !body.confirmPassword) return "Required fields are missing";
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(body.email)) return "Invalid email";
   if (!allowedRoles.includes(body.role ?? "Employee")) return "Invalid role";
-  if (body.password.length < 6) return "Password must be at least 6 characters";
+  if (body.password.length < systemSettings.security.minPasswordLength) return `Password must be at least ${systemSettings.security.minPasswordLength} characters`;
   if (body.password !== body.confirmPassword) return "Passwords do not match";
   return "";
 }
@@ -1345,6 +1379,65 @@ function escapePdfText(value: string) {
     .replace(/\\/g, "\\\\")
     .replace(/\(/g, "\\(")
     .replace(/\)/g, "\\)");
+}
+
+function validateSystemSettings(body: Partial<SystemSettings>) {
+  if (body.attendancePolicy) {
+    if (!isTimeValue(body.attendancePolicy.standardStartTime) || !isTimeValue(body.attendancePolicy.standardEndTime)) return "Invalid attendance policy time";
+    if ((body.attendancePolicy.standardEndTime ?? "") <= (body.attendancePolicy.standardStartTime ?? "")) return "Standard end time must be after start time";
+    if (!isNonNegativeNumber(body.attendancePolicy.lateGraceMinutes) || !isNonNegativeNumber(body.attendancePolicy.earlyLeaveGraceMinutes)) return "Invalid grace minutes";
+    if (!isPositiveNumber(body.attendancePolicy.overtimeAfterHours)) return "Invalid overtime threshold";
+  }
+  if (body.leavePolicy && !isNonNegativeNumber(body.leavePolicy.defaultAnnualLeaveDays)) return "Invalid annual leave days";
+  if (body.workSchedules?.some((schedule) => !schedule.name?.trim() || !isTimeValue(schedule.startTime) || !isTimeValue(schedule.endTime) || schedule.endTime <= schedule.startTime || !isNonNegativeNumber(schedule.breakMinutes) || !Array.isArray(schedule.workDays))) return "Invalid work schedule";
+  if (body.holidays?.some((holiday) => !holiday.name?.trim() || !holiday.startDate || !holiday.endDate || holiday.endDate < holiday.startDate)) return "Invalid holiday";
+  if (body.payrollExport && body.payrollExport.defaultFormat !== "excel" && body.payrollExport.defaultFormat !== "pdf") return "Invalid payroll export format";
+  if (body.security && (!isPositiveNumber(body.security.minPasswordLength) || body.security.minPasswordLength < 6 || !isPositiveNumber(body.security.sessionTimeoutMinutes) || body.security.sessionTimeoutMinutes < 15)) return "Invalid security settings";
+  if (body.audit && (!isPositiveNumber(body.audit.retentionDays) || body.audit.retentionDays < 30)) return "Invalid audit retention";
+  return "";
+}
+
+function updateSystemSettings(body: Partial<SystemSettings>) {
+  if (body.attendancePolicy) systemSettings.attendancePolicy = { ...systemSettings.attendancePolicy, ...body.attendancePolicy };
+  if (body.leavePolicy) {
+    systemSettings.leavePolicy = { ...systemSettings.leavePolicy, ...body.leavePolicy };
+    leaveWorkflowConfig.defaultAnnualLeaveDays = Math.max(0, Math.floor(systemSettings.leavePolicy.defaultAnnualLeaveDays));
+    leaveWorkflowConfig.attachmentRequiredForSickLeave = systemSettings.leavePolicy.attachmentRequiredForSickLeave;
+    leaveWorkflowConfig.requireHrApproval = systemSettings.leavePolicy.requireHrApproval;
+    leaveWorkflowConfig.annualLeaveRequiresBalance = systemSettings.leavePolicy.blockAnnualLeaveOverBalance;
+  }
+  if (body.workSchedules) systemSettings.workSchedules = body.workSchedules.map((schedule) => ({ ...schedule, breakMinutes: Math.max(0, Math.floor(schedule.breakMinutes)), workDays: schedule.workDays.filter((day) => Number.isInteger(day) && day >= 0 && day <= 6) }));
+  if (body.holidays) systemSettings.holidays = body.holidays;
+  if (body.roles) systemSettings.roles = { ...systemSettings.roles, ...body.roles };
+  if (body.notifications) systemSettings.notifications = { ...systemSettings.notifications, ...body.notifications };
+  if (body.payrollExport) systemSettings.payrollExport = { ...systemSettings.payrollExport, ...body.payrollExport };
+  if (body.security) systemSettings.security = { ...systemSettings.security, ...body.security, minPasswordLength: Math.max(6, Math.floor(body.security.minPasswordLength)), sessionTimeoutMinutes: Math.max(15, Math.floor(body.security.sessionTimeoutMinutes)) };
+  if (body.integrations) systemSettings.integrations = { ...systemSettings.integrations, ...body.integrations };
+  if (body.audit) systemSettings.audit = { ...systemSettings.audit, ...body.audit, retentionDays: Math.max(30, Math.floor(body.audit.retentionDays)) };
+}
+
+function getChangedSettingGroups(current: SystemSettings, next: Partial<SystemSettings>) {
+  return (Object.keys(next) as Array<keyof SystemSettings>).filter((group) => JSON.stringify(current[group]) !== JSON.stringify(next[group]));
+}
+
+function canEditSettingGroup(role: string, group: keyof SystemSettings) {
+  if (role === "Admin") return true;
+  if (role === "HR") return ["attendancePolicy", "leavePolicy", "workSchedules", "holidays", "notifications"].includes(group);
+  if (role === "Payroll") return group === "payrollExport" || group === "notifications";
+  if (role === "Manager" || role === "Employee") return group === "notifications";
+  return false;
+}
+
+function isTimeValue(value: unknown) {
+  return typeof value === "string" && /^\d{2}:\d{2}$/.test(value);
+}
+
+function isNonNegativeNumber(value: unknown) {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0;
+}
+
+function isPositiveNumber(value: unknown) {
+  return typeof value === "number" && Number.isFinite(value) && value > 0;
 }
 
 function updateLeaveWorkflowConfig(body: Partial<LeaveWorkflowConfig>) {
