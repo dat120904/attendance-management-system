@@ -6,6 +6,15 @@ export type User = {
   email: string;
   role: UserRole;
   subtitle: string;
+  employeeCode?: string;
+  phone?: string;
+  position?: string;
+  managerId?: string;
+  hireDate?: string;
+  employmentStatus?: "Active" | "Locked" | "Inactive";
+  schedulePolicy?: string;
+  attendancePolicy?: string;
+  leavePolicy?: string;
   remainingLeaveDays: number;
   locked: boolean;
 };
@@ -74,6 +83,52 @@ export type LeaveRequest = {
   attachment?: LeaveAttachment;
   status: LeaveStatus;
   createdAt: string;
+};
+
+
+export type PayrollStatus = "Draft" | "Confirmed" | "Locked";
+
+export type PayrollSummaryRow = {
+  employeeId: string;
+  employeeName: string;
+  department: string;
+  standardHours: number;
+  workedHours: number;
+  overtimeHours: number;
+  paidLeaveHours: number;
+  unpaidLeaveHours: number;
+  missingHours: number;
+  lateCount: number;
+  earlyLeaveCount: number;
+  missingLogCount: number;
+  totalPayableHours: number;
+};
+
+export type PayrollVersion = {
+  version: number;
+  action: string;
+  actorId: string;
+  createdAt: string;
+  notes: string;
+};
+
+export type PayrollPeriod = {
+  id: string;
+  name: string;
+  startDate: string;
+  endDate: string;
+  status: PayrollStatus;
+  createdBy: string;
+  createdAt: string;
+  confirmedBy?: string;
+  confirmedAt?: string;
+  lockedBy?: string;
+  lockedAt?: string;
+  unlockedBy?: string;
+  unlockedAt?: string;
+  warnings: string[];
+  rows: PayrollSummaryRow[];
+  versions: PayrollVersion[];
 };
 
 export type Session = {

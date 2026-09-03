@@ -1,5 +1,6 @@
 import type { Translation } from "../i18n";
 import type { User } from "../types";
+import { translateDepartment, translateRole } from "../utils/localize";
 
 type ProfilePageProps = {
   t: Translation;
@@ -22,7 +23,7 @@ export function ProfilePage({ t, user }: ProfilePageProps) {
           <div>
             <h4>{user.name}</h4>
             <p>{user.email}</p>
-            <span className="badge muted">{user.role}</span>
+            <span className="badge muted">{translateRole(user.role, t)}</span>
           </div>
         </section>
 
@@ -39,11 +40,11 @@ export function ProfilePage({ t, user }: ProfilePageProps) {
             </label>
             <label>
               {t.role}
-              <input value={user.role} readOnly />
+              <input value={translateRole(user.role, t)} readOnly />
             </label>
             <label>
               {t.department}
-              <input value={user.subtitle} readOnly />
+              <input value={translateDepartment(user.subtitle, t)} readOnly />
             </label>
           </div>
         </section>

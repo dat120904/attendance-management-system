@@ -1,4 +1,4 @@
-﻿import type { AttendanceLog, AttendanceSession, AuditLog, LeaveRequest, LeaveWorkflowConfig, User } from "./types.js";
+﻿import type { AttendanceLog, AttendanceSession, AuditLog, LeaveRequest, LeaveWorkflowConfig, PayrollPeriod, User } from "./types.js";
 
 export const users: User[] = [
   {
@@ -7,6 +7,15 @@ export const users: User[] = [
     email: "alex@workforce.local",
     role: "Employee",
     subtitle: "Employee",
+    employeeCode: "EMP-001",
+    phone: "0901000001",
+    position: "Product Designer",
+    managerId: "u-manager",
+    hireDate: "2024-03-12",
+    employmentStatus: "Active",
+    schedulePolicy: "Standard 8h",
+    attendancePolicy: "Office check-in",
+    leavePolicy: "Annual 14 days",
     remainingLeaveDays: 14,
     locked: false
   },
@@ -16,6 +25,15 @@ export const users: User[] = [
     email: "linh@workforce.local",
     role: "Employee",
     subtitle: "Operations",
+    employeeCode: "EMP-002",
+    phone: "0901000002",
+    position: "Operations Associate",
+    managerId: "u-manager",
+    hireDate: "2024-06-18",
+    employmentStatus: "Active",
+    schedulePolicy: "Standard 8h",
+    attendancePolicy: "Office check-in",
+    leavePolicy: "Annual 12 days",
     remainingLeaveDays: 11,
     locked: false
   },
@@ -25,6 +43,15 @@ export const users: User[] = [
     email: "manager@workforce.local",
     role: "Manager",
     subtitle: "Team Manager",
+    employeeCode: "MGR-001",
+    phone: "0901000003",
+    position: "Operations Manager",
+    managerId: "u-admin",
+    hireDate: "2023-11-02",
+    employmentStatus: "Active",
+    schedulePolicy: "Manager flexible",
+    attendancePolicy: "Office + remote",
+    leavePolicy: "Annual 12 days",
     remainingLeaveDays: 10,
     locked: false
   },
@@ -34,6 +61,15 @@ export const users: User[] = [
     email: "hr@workforce.local",
     role: "HR",
     subtitle: "People Operations",
+    employeeCode: "HR-001",
+    phone: "0901000004",
+    position: "HR Specialist",
+    managerId: "u-admin",
+    hireDate: "2023-08-21",
+    employmentStatus: "Active",
+    schedulePolicy: "Standard 8h",
+    attendancePolicy: "Office check-in",
+    leavePolicy: "Annual 12 days",
     remainingLeaveDays: 12,
     locked: false
   },
@@ -43,6 +79,15 @@ export const users: User[] = [
     email: "payroll@workforce.local",
     role: "Payroll",
     subtitle: "Payroll Specialist",
+    employeeCode: "PAY-001",
+    phone: "0901000005",
+    position: "Payroll Specialist",
+    managerId: "u-admin",
+    hireDate: "2023-09-01",
+    employmentStatus: "Active",
+    schedulePolicy: "Payroll cycle",
+    attendancePolicy: "Office check-in",
+    leavePolicy: "Annual 12 days",
     remainingLeaveDays: 9,
     locked: false
   },
@@ -52,6 +97,15 @@ export const users: User[] = [
     email: "admin@workforce.local",
     role: "Admin",
     subtitle: "Enterprise Admin",
+    employeeCode: "ADM-001",
+    phone: "0901000006",
+    position: "Enterprise Admin",
+    managerId: "",
+    hireDate: "2022-01-10",
+    employmentStatus: "Active",
+    schedulePolicy: "Admin flexible",
+    attendancePolicy: "Office + remote",
+    leavePolicy: "Annual 14 days",
     remainingLeaveDays: 14,
     locked: false
   }
@@ -145,6 +199,7 @@ export const attendanceLogs: AttendanceLog[] = [
 
 export const activeAttendanceSessions = new Map<string, AttendanceSession>();
 export const auditLogs: AuditLog[] = [];
+export const payrollPeriods: PayrollPeriod[] = [];
 
 export const leaveWorkflowConfig: LeaveWorkflowConfig = {
   requireHrApproval: true,

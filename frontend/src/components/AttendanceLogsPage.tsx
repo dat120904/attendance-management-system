@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { decideAttendanceAdjustment, downloadAttendanceExport, fetchAttendanceLogs, fetchAuditLogs, requestAttendanceAdjustment } from "../api";
 import type { AttendanceLog, User } from "../types";
 import type { Translation } from "../i18n";
+import { translateDepartment } from "../utils/localize";
 
 type DateRange = "day" | "week" | "month";
 type StatusFilter = "All" | AttendanceLog["status"];
@@ -237,7 +238,7 @@ export function AttendanceLogsPage({ authToken, logs, onLogsChange, t, user }: A
                   <tr className={selectedLog?.id === log.id ? "selected-row" : ""} key={log.id} onClick={() => setSelectedLog(log)}>
                     <td data-label={t.date}>{log.date}</td>
                     <td data-label={t.employee}>{log.employeeName}</td>
-                    <td data-label={t.department}>{log.department}</td>
+                    <td data-label={t.department}>{translateDepartment(log.department, t)}</td>
                     <td data-label={t.checkInColumn}>{log.checkIn}</td>
                     <td data-label={t.checkOutColumn}>{log.checkOut}</td>
                     <td data-label={t.totalHours}>{log.totalHours}</td>
@@ -263,7 +264,7 @@ export function AttendanceLogsPage({ authToken, logs, onLogsChange, t, user }: A
               <h3>{selectedLog.employeeName}</h3>
               <dl>
                 <div><dt>{t.date}</dt><dd>{selectedLog.date}</dd></div>
-                <div><dt>{t.department}</dt><dd>{selectedLog.department}</dd></div>
+                <div><dt>{t.department}</dt><dd>{translateDepartment(selectedLog.department, t)}</dd></div>
                 <div><dt>{t.checkInColumn}</dt><dd>{selectedLog.checkIn}</dd></div>
                 <div><dt>{t.checkOutColumn}</dt><dd>{selectedLog.checkOut}</dd></div>
                 <div><dt>{t.totalHours}</dt><dd>{selectedLog.totalHours}</dd></div>
@@ -355,7 +356,7 @@ function downloadExport(format: "Excel" | "PDF", logs: AttendanceLog[], t: Trans
   const rows = logs.map((log) => [
     log.date,
     log.employeeName,
-    log.department,
+    translateDepartment(log.department, t),
     log.checkIn,
     log.checkOut,
     log.totalHours,

@@ -1,4 +1,4 @@
-import type { AttendanceLog, LeaveAttachment, LeaveRequest, LeaveType, LeaveWorkflowConfig, User } from "./types";
+import type { AttendanceLog, LeaveAttachment, LeaveRequest, LeaveType, LeaveWorkflowConfig, PayrollPeriod, User } from "./types";
 
 const API_BASE_URL = import.meta.env.VITE_API_URL ?? "http://localhost:4000";
 
@@ -28,6 +28,27 @@ type LeaveRequestResponse = {
 
 type LeaveWorkflowResponse = {
   workflow: LeaveWorkflowConfig;
+};
+
+type PayrollPeriodsResponse = {
+  periods: PayrollPeriod[];
+};
+
+type PayrollPeriodResponse = {
+  period: PayrollPeriod;
+};
+
+type EmployeesResponse = {
+  users: User[];
+};
+
+type EmployeeResponse = {
+  user: User;
+};
+
+type EmployeeImportResponse = {
+  users: User[];
+  errors: string[];
 };
 
 type AuditLogsResponse = {
@@ -168,6 +189,96 @@ export async function updateLeaveWorkflow(token: string, workflow: LeaveWorkflow
     token,
     body: JSON.stringify(workflow)
   });
+}
+
+
+
+export async function fetchEmployees(token: string) {
+  return request<EmployeesResponse>("/api/employees", { token });
+}
+
+export async function createEmployee(token: string, employee: Partial<User>) {
+  return request<EmployeeResponse>("/api/employees", {
+    method: "POST",
+    token,
+    body: JSON.stringify(employee)
+  });
+}
+
+export async function updateEmployee(token: string, employeeId: string, employee: Partial<User>) {
+  return request<EmployeeResponse>("/api/employees/" + employeeId, {
+    method: "PUT",
+    token,
+    body: JSON.stringify(employee)
+  });
+}
+
+export async function setEmployeeLocked(token: string, employeeId: string, locked: boolean) {
+  return request<EmployeeResponse>("/api/employees/" + employeeId + "/lock", {
+    method: "POST",
+    token,
+    body: JSON.stringify({ locked })
+  });
+}
+
+export async function importEmployees(token: string, rows: string) {
+  return request<EmployeeImportResponse>("/api/employees/import", {
+    method: "POST",
+    token,
+    body: JSON.stringify({ rows })
+  });
+}
+
+export async function downloadEmployeeExport(token: string, format: "excel" | "pdf") {
+  const response = await fetch(API_BASE_URL + "/api/employees/export?format=" + format, {
+    headers: { Authorization: "Bearer " + token }
+  });
+
+  if (!response.ok) {
+    throw new Error(await getErrorMessage(response));
+  }
+
+  return response.blob();
+}
+
+export async function fetchPayrollPeriods(token: string) {
+  return request<PayrollPeriodsResponse>("/api/payroll/periods", { token });
+}
+
+export async function createPayrollPeriod(token: string, form: { name: string; startDate: string; endDate: string }) {
+  return request<PayrollPeriodResponse>("/api/payroll/periods", {
+    method: "POST",
+    token,
+    body: JSON.stringify(form)
+  });
+}
+
+export async function recalculatePayrollPeriod(token: string, periodId: string) {
+  return request<PayrollPeriodResponse>(`/api/payroll/periods/${periodId}/recalculate`, { method: "POST", token });
+}
+
+export async function confirmPayrollPeriod(token: string, periodId: string) {
+  return request<PayrollPeriodResponse>(`/api/payroll/periods/${periodId}/confirm`, { method: "POST", token });
+}
+
+export async function lockPayrollPeriod(token: string, periodId: string) {
+  return request<PayrollPeriodResponse>(`/api/payroll/periods/${periodId}/lock`, { method: "POST", token });
+}
+
+export async function unlockPayrollPeriod(token: string, periodId: string) {
+  return request<PayrollPeriodResponse>(`/api/payroll/periods/${periodId}/unlock`, { method: "POST", token });
+}
+
+export async function downloadPayrollExport(token: string, periodId: string, format: "excel" | "pdf") {
+  const response = await fetch(`${API_BASE_URL}/api/payroll/periods/${periodId}/export?format=${format}`, {
+    headers: { Authorization: `Bearer ${token}` }
+  });
+
+  if (!response.ok) {
+    throw new Error(await getErrorMessage(response));
+  }
+
+  return response.blob();
 }
 
 async function request<T>(path: string, options: RequestInit & { token?: string } = {}) {
