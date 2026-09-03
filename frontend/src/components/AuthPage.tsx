@@ -1,5 +1,6 @@
 import { FormEvent, useState } from "react";
 import type { User } from "../types";
+import { translateRole } from "../utils/localize";
 import type { Language, Translation } from "../i18n";
 import { BuildingIcon } from "./icons";
 
@@ -109,7 +110,7 @@ export function AuthPage({ language, onLanguageChange, onLogin, onNewEmployeeChe
                     <div className="employee-avatar">{user.name.charAt(0)}</div>
                     <div>
                       <strong>{user.name}</strong>
-                      <span>{user.role} - {user.email}</span>
+                      <span>{translateRole(user.role, t)} - {user.email}</span>
                     </div>
                     <button type="button" onClick={() => onQuickCheckIn(user)}>
                       {t.checkIn}
@@ -139,7 +140,7 @@ export function AuthPage({ language, onLanguageChange, onLogin, onNewEmployeeChe
                 <select value={selectedEmail} onChange={(event) => setSelectedEmail(event.target.value)}>
                   {users.map((user) => (
                     <option value={user.email} key={user.id}>
-                      {user.email} - {user.role}
+                      {user.email} - {translateRole(user.role, t)}
                     </option>
                   ))}
                 </select>

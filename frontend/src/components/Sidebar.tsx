@@ -1,12 +1,14 @@
 import type { AppPage, User } from "../types";
 import type { Translation } from "../i18n";
 import { BuildingIcon } from "./icons";
+import { translateDepartment } from "../utils/localize";
 
 const navItems = [
   ["dashboard", "grid-icon"],
   ["attendanceLogs", "calendar-icon"],
   ["leaveRequests", "leave-nav-icon"],
   ["payrollSummaries", "payroll-icon"],
+  ["employeeManagement", "employee-nav-icon"],
   ["settings", "settings-icon"]
 ] as const;
 
@@ -32,7 +34,7 @@ export function Sidebar({ activePage, onLogout, onNavigate, user, t }: SidebarPr
         </div>
         <div>
           <h1>Workforce Pro</h1>
-          <p>{user.subtitle}</p>
+          <p>{translateDepartment(user.subtitle, t)}</p>
         </div>
       </div>
 

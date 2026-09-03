@@ -74,6 +74,10 @@ export function getUserByToken(token: string) {
   return user ? publicUser(user) : null;
 }
 
+export function setUserPassword(email: string, password: string) {
+  passwords.set(email.trim().toLowerCase(), password);
+}
+
 export function publicUser(user: User) {
   const { locked, ...safeUser } = user;
   return safeUser;

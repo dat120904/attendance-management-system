@@ -3,14 +3,16 @@ import { AttendanceLogsPage } from "./components/AttendanceLogsPage";
 import { AuthPage } from "./components/AuthPage";
 import { Dashboard } from "./components/Dashboard";
 import { LeaveRequestsPage } from "./components/LeaveRequestsPage";
+import { PayrollSummariesPage } from "./components/PayrollSummariesPage";
+import { EmployeeManagementPage } from "./components/EmployeeManagementPage";
 import { ProfilePage } from "./components/ProfilePage";
 import { Sidebar } from "./components/Sidebar";
 import { Topbar } from "./components/Topbar";
 import { loginWithPassword, registerAccount } from "./api";
-import { dashboardData, demoUsers, leaveRequests as initialLeaveRequests, leaveWorkflowConfig as initialLeaveWorkflowConfig } from "./data/mockData";
+import { dashboardData, demoUsers, leaveRequests as initialLeaveRequests, leaveWorkflowConfig as initialLeaveWorkflowConfig, payrollPeriods as initialPayrollPeriods } from "./data/mockData";
 import type { Language } from "./i18n";
 import { translations } from "./i18n";
-import type { AppPage, AttendanceLog, AttendanceSession, LeaveRequest, LeaveWorkflowConfig, User } from "./types";
+import type { AppPage, AttendanceLog, AttendanceSession, LeaveRequest, LeaveWorkflowConfig, PayrollPeriod, User } from "./types";
 import { formatClockTime, formatLogDate, formatTotalHours } from "./utils/time";
 
 export default function App() {
@@ -32,6 +34,7 @@ export default function App() {
   const [logs, setLogs] = useState<AttendanceLog[]>(dashboardData.logs);
   const [leaveRequests, setLeaveRequests] = useState<LeaveRequest[]>(initialLeaveRequests);
   const [leaveWorkflowConfig, setLeaveWorkflowConfig] = useState<LeaveWorkflowConfig>(initialLeaveWorkflowConfig);
+  const [payrollPeriods, setPayrollPeriods] = useState<PayrollPeriod[]>(initialPayrollPeriods);
   const [attendanceMessage, setAttendanceMessage] = useState("");
   const [attendanceError, setAttendanceError] = useState("");
   const [isAttendanceBusy, setIsAttendanceBusy] = useState(false);
@@ -273,8 +276,29 @@ export default function App() {
             user={user}
           />
         )}
+        {activePage === "payrollSummaries" && (
+          <PayrollSummariesPage
+            authToken={authToken}
+            logs={logs}
+            periods={payrollPeriods}
+            onLogsChange={setLogs}
+            onPeriodsChange={setPayrollPeriods}
+            t={t}
+            user={user}
+          />
+        )}
+        {activePage === "employeeManagement" && (
+          <EmployeeManagementPage
+            authToken={authToken}
+            logs={logs}
+            onUsersChange={setUsers}
+            t={t}
+            user={user}
+            users={users}
+          />
+        )}
         {activePage === "profile" && <ProfilePage t={t} user={user} />}
-        {activePage !== "dashboard" && activePage !== "attendanceLogs" && activePage !== "leaveRequests" && activePage !== "profile" && (
+        {activePage !== "dashboard" && activePage !== "attendanceLogs" && activePage !== "leaveRequests" && activePage !== "payrollSummaries" && activePage !== "employeeManagement" && activePage !== "profile" && (
           <section className="placeholder-page">
             <h3>{t[activePage]}</h3>
             <p>{t.pageComingSoon}</p>

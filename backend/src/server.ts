@@ -1,9 +1,9 @@
-import { createReadStream, existsSync, mkdirSync, writeFileSync } from "node:fs";
+﻿import { createReadStream, existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { createServer, IncomingMessage, ServerResponse } from "node:http";
 import { join, resolve } from "node:path";
-import { activeAttendanceSessions, attendanceLogs, auditLogs, leaveRequests, leaveWorkflowConfig, users } from "./data.js";
-import type { AttendanceLog, LeaveAttachment, LeaveRequest, LeaveType, LeaveWorkflowConfig } from "./types.js";
-import { getUserByToken, login, logout, publicUser, registerAccount } from "./auth.js";
+import { activeAttendanceSessions, attendanceLogs, auditLogs, leaveRequests, leaveWorkflowConfig, payrollPeriods, users } from "./data.js";
+import type { AttendanceLog, LeaveAttachment, LeaveRequest, LeaveType, LeaveWorkflowConfig, PayrollPeriod, PayrollSummaryRow, User } from "./types.js";
+import { getUserByToken, login, logout, publicUser, registerAccount, setUserPassword } from "./auth.js";
 import type { UserRole } from "./types.js";
 
 const port = Number(process.env.PORT ?? 4000);
@@ -166,6 +166,153 @@ const server = createServer(async (request, response) => {
       attendanceLogs.unshift(log);
       activeAttendanceSessions.delete(user.id);
       sendJson(response, 200, { log });
+      return;
+    }
+
+
+    if (request.method === "GET" && request.url === "/api/employees") {
+      const user = requireUser(request, response);
+      if (!user) return;
+      if (!canViewEmployees(user.role)) {
+        sendJson(response, 403, { error: "Forbidden" });
+        return;
+      }
+
+      sendJson(response, 200, { users: getRoleScopedEmployees(users, user).map(publicEmployee) });
+      return;
+    }
+
+    if (request.method === "POST" && request.url === "/api/employees") {
+      const user = requireUser(request, response);
+      if (!user) return;
+      if (!canManageEmployees(user.role)) {
+        sendJson(response, 403, { error: "Forbidden" });
+        return;
+      }
+
+      const body = await readJsonBody<Partial<User> & { password?: string }>(request);
+      const validationError = validateEmployeeBody(body);
+      if (validationError) {
+        sendJson(response, 400, { error: validationError });
+        return;
+      }
+
+      if (users.some((item) => item.email.toLowerCase() === body.email?.trim().toLowerCase())) {
+        sendJson(response, 409, { error: "Email already exists" });
+        return;
+      }
+
+      const employee = buildEmployee(body);
+      users.push(employee);
+      setUserPassword(employee.email, body.password || "password");
+      addAudit(user.id, "employee.created", employee.id);
+      sendJson(response, 201, { user: publicEmployee(employee) });
+      return;
+    }
+
+    if (request.method === "PUT" && request.url?.match(/^\/api\/employees\/[^/]+$/)) {
+      const user = requireUser(request, response);
+      if (!user) return;
+      if (!canManageEmployees(user.role)) {
+        sendJson(response, 403, { error: "Forbidden" });
+        return;
+      }
+
+      const employeeId = request.url.split("/")[3];
+      const employee = users.find((item) => item.id === employeeId);
+      if (!employee) {
+        sendJson(response, 404, { error: "Employee not found" });
+        return;
+      }
+
+      const body = await readJsonBody<Partial<User>>(request);
+      const validationError = validateEmployeeBody({ ...employee, ...body });
+      if (validationError) {
+        sendJson(response, 400, { error: validationError });
+        return;
+      }
+      const nextEmail = body.email?.trim().toLowerCase();
+      if (nextEmail && users.some((item) => item.id !== employee.id && item.email.toLowerCase() === nextEmail)) {
+        sendJson(response, 409, { error: "Email already exists" });
+        return;
+      }
+
+      updateEmployee(employee, body);
+      addAudit(user.id, "employee.updated", employee.id);
+      sendJson(response, 200, { user: publicEmployee(employee) });
+      return;
+    }
+
+    if (request.method === "POST" && request.url?.match(/^\/api\/employees\/[^/]+\/lock$/)) {
+      const user = requireUser(request, response);
+      if (!user) return;
+      if (!canManageEmployees(user.role)) {
+        sendJson(response, 403, { error: "Forbidden" });
+        return;
+      }
+
+      const employeeId = request.url.split("/")[3];
+      if (employeeId === user.id) {
+        sendJson(response, 409, { error: "You cannot lock your own account" });
+        return;
+      }
+      const employee = users.find((item) => item.id === employeeId);
+      if (!employee) {
+        sendJson(response, 404, { error: "Employee not found" });
+        return;
+      }
+
+      const body = await readJsonBody<{ locked?: boolean }>(request);
+      employee.locked = Boolean(body.locked);
+      employee.employmentStatus = employee.locked ? "Locked" : "Active";
+      addAudit(user.id, employee.locked ? "employee.locked" : "employee.unlocked", employee.id);
+      sendJson(response, 200, { user: publicEmployee(employee) });
+      return;
+    }
+
+    if (request.method === "POST" && request.url === "/api/employees/import") {
+      const user = requireUser(request, response);
+      if (!user) return;
+      if (!canManageEmployees(user.role)) {
+        sendJson(response, 403, { error: "Forbidden" });
+        return;
+      }
+
+      const body = await readJsonBody<{ rows?: string }>(request);
+      const result = parseEmployeeImportRows(body.rows ?? "");
+      if (result.errors.length) {
+        sendJson(response, 400, result);
+        return;
+      }
+
+      users.push(...result.users);
+      result.users.forEach((employee) => setUserPassword(employee.email, "password"));
+      addAudit(user.id, "employee.imported", "employees");
+      sendJson(response, 201, { users: result.users.map(publicEmployee), errors: [] });
+      return;
+    }
+
+    if (request.method === "GET" && request.url?.startsWith("/api/employees/export")) {
+      const user = requireUser(request, response);
+      if (!user) return;
+      if (!canViewEmployees(user.role)) {
+        sendJson(response, 403, { error: "Forbidden" });
+        return;
+      }
+
+      const url = new URL(request.url, `http://${request.headers.host}`);
+      const format = url.searchParams.get("format") ?? "excel";
+      if (format !== "excel" && format !== "pdf") {
+        sendJson(response, 400, { error: "Unsupported export format" });
+        return;
+      }
+      const rows = toEmployeeExportRows(getRoleScopedEmployees(users, user));
+      const body = format === "pdf" ? buildSimplePdf("Employee Management", rows) : buildExcelWorkbook("Employee Management", rows);
+      response.writeHead(200, {
+        "Content-Type": format === "pdf" ? "application/pdf" : "application/vnd.ms-excel; charset=utf-8",
+        "Content-Disposition": `attachment; filename="employees.${format === "excel" ? "xls" : "pdf"}"`
+      });
+      response.end(body);
       return;
     }
 
@@ -388,6 +535,164 @@ const server = createServer(async (request, response) => {
       return;
     }
 
+    if (request.method === "GET" && request.url === "/api/payroll/periods") {
+      const user = requireUser(request, response);
+      if (!user) return;
+      if (!canViewPayroll(user.role)) {
+        sendJson(response, 403, { error: "Forbidden" });
+        return;
+      }
+
+      ensureDefaultPayrollPeriod();
+      sendJson(response, 200, { periods: payrollPeriods.map((period) => scopePayrollPeriod(period, user)) });
+      return;
+    }
+
+    if (request.method === "POST" && request.url === "/api/payroll/periods") {
+      const user = requireUser(request, response);
+      if (!user) return;
+      if (user.role !== "Payroll" && user.role !== "Admin") {
+        sendJson(response, 403, { error: "Forbidden" });
+        return;
+      }
+
+      const body = await readJsonBody<{ name?: string; startDate?: string; endDate?: string }>(request);
+      const validationError = validatePayrollPeriodBody(body);
+      if (validationError) {
+        sendJson(response, 400, { error: validationError });
+        return;
+      }
+
+      const period: PayrollPeriod = {
+        id: `payroll-${Date.now()}`,
+        name: body.name?.trim() || `Payroll ${body.startDate} - ${body.endDate}`,
+        startDate: body.startDate ?? "",
+        endDate: body.endDate ?? "",
+        status: "Draft",
+        createdBy: user.id,
+        createdAt: new Date().toISOString(),
+        warnings: [],
+        rows: [],
+        versions: []
+      };
+      refreshPayrollPeriod(period, user.id, "created");
+      payrollPeriods.unshift(period);
+      addAudit(user.id, "payroll.period.created", period.id);
+      sendJson(response, 201, { period: scopePayrollPeriod(period, user) });
+      return;
+    }
+
+    if (request.url?.match(/^\/api\/payroll\/periods\/[^/]+\/(recalculate|confirm|lock|unlock)$/) && request.method === "POST") {
+      const user = requireUser(request, response);
+      if (!user) return;
+
+      const [, , , , periodId, action] = request.url.split("/");
+      const period = payrollPeriods.find((item) => item.id === periodId);
+      if (!period) {
+        sendJson(response, 404, { error: "Payroll period not found" });
+        return;
+      }
+
+      if (action === "recalculate") {
+        if (user.role !== "Payroll" && user.role !== "HR" && user.role !== "Admin") {
+          sendJson(response, 403, { error: "Forbidden" });
+          return;
+        }
+        if (period.status === "Locked") {
+          sendJson(response, 409, { error: "Payroll period is locked" });
+          return;
+        }
+        refreshPayrollPeriod(period, user.id, "recalculated");
+        addAudit(user.id, "payroll.period.recalculated", period.id);
+        sendJson(response, 200, { period: scopePayrollPeriod(period, user) });
+        return;
+      }
+
+      if (action === "confirm") {
+        if (user.role !== "HR" && user.role !== "Admin" && user.role !== "Payroll") {
+          sendJson(response, 403, { error: "Forbidden" });
+          return;
+        }
+        if (period.status === "Locked") {
+          sendJson(response, 409, { error: "Payroll period is locked" });
+          return;
+        }
+        refreshPayrollPeriod(period, user.id, "confirmed");
+        period.status = "Confirmed";
+        period.confirmedBy = user.id;
+        period.confirmedAt = new Date().toISOString();
+        addAudit(user.id, "payroll.period.confirmed", period.id);
+        sendJson(response, 200, { period: scopePayrollPeriod(period, user) });
+        return;
+      }
+
+      if (action === "lock") {
+        if (user.role !== "Payroll" && user.role !== "Admin") {
+          sendJson(response, 403, { error: "Forbidden" });
+          return;
+        }
+        refreshPayrollPeriod(period, user.id, "pre-lock check");
+        if (period.warnings.length > 0) {
+          sendJson(response, 409, { error: "Payroll period has unresolved warnings", warnings: period.warnings });
+          return;
+        }
+        period.status = "Locked";
+        period.lockedBy = user.id;
+        period.lockedAt = new Date().toISOString();
+        lockAttendanceLogsForPeriod(period);
+        addPayrollVersion(period, user.id, "locked");
+        addAudit(user.id, "payroll.period.locked", period.id);
+        sendJson(response, 200, { period: scopePayrollPeriod(period, user) });
+        return;
+      }
+
+      if (action === "unlock") {
+        if (user.role !== "Admin") {
+          sendJson(response, 403, { error: "Forbidden" });
+          return;
+        }
+        period.status = "Draft";
+        period.unlockedBy = user.id;
+        period.unlockedAt = new Date().toISOString();
+        unlockAttendanceLogsForPeriod(period);
+        addPayrollVersion(period, user.id, "unlocked");
+        addAudit(user.id, "payroll.period.unlocked", period.id);
+        sendJson(response, 200, { period: scopePayrollPeriod(period, user) });
+        return;
+      }
+    }
+
+    if (request.method === "GET" && request.url?.match(/^\/api\/payroll\/periods\/[^/]+\/export/)) {
+      const user = requireUser(request, response);
+      if (!user) return;
+      if (!canViewPayroll(user.role)) {
+        sendJson(response, 403, { error: "Forbidden" });
+        return;
+      }
+
+      const url = new URL(request.url, `http://${request.headers.host}`);
+      const periodId = request.url.split("/")[4];
+      const period = payrollPeriods.find((item) => item.id === periodId);
+      if (!period) {
+        sendJson(response, 404, { error: "Payroll period not found" });
+        return;
+      }
+      const format = url.searchParams.get("format") ?? "excel";
+      if (format !== "excel" && format !== "pdf") {
+        sendJson(response, 400, { error: "Unsupported export format" });
+        return;
+      }
+      const scopedPeriod = scopePayrollPeriod(period, user);
+      const rows = toPayrollExportRows(scopedPeriod);
+      const body = format === "pdf" ? buildSimplePdf(scopedPeriod.name, rows) : buildExcelWorkbook(scopedPeriod.name, rows);
+      response.writeHead(200, {
+        "Content-Type": format === "pdf" ? "application/pdf" : "application/vnd.ms-excel; charset=utf-8",
+        "Content-Disposition": `attachment; filename="payroll-summary.${format === "excel" ? "xls" : "pdf"}"`
+      });
+      response.end(body);
+      return;
+    }
+
     if (request.method === "GET" && request.url?.startsWith("/api/attendance/export")) {
       const user = requireUser(request, response);
       if (!user) return;
@@ -487,6 +792,276 @@ server.on("error", (error: NodeJS.ErrnoException) => {
 server.listen(port, () => {
   console.log(`Workforce Pro API listening on http://localhost:${port}`);
 });
+
+function canViewPayroll(role: string) {
+  return role === "Manager" || role === "HR" || role === "Payroll" || role === "Admin";
+}
+
+function ensureDefaultPayrollPeriod() {
+  if (payrollPeriods.length > 0) return;
+  const start = new Date();
+  start.setDate(1);
+  const end = new Date(start.getFullYear(), start.getMonth() + 1, 0);
+  const period: PayrollPeriod = {
+    id: "payroll-current-demo",
+    name: "Current payroll period",
+    startDate: start.toISOString().slice(0, 10),
+    endDate: end.toISOString().slice(0, 10),
+    status: "Draft",
+    createdBy: "system",
+    createdAt: new Date().toISOString(),
+    warnings: [],
+    rows: [],
+    versions: []
+  };
+  refreshPayrollPeriod(period, "system", "seeded");
+  payrollPeriods.push(period);
+}
+
+function validatePayrollPeriodBody(body: { name?: string; startDate?: string; endDate?: string }) {
+  if (!body.startDate || !body.endDate) return "Payroll period dates are required";
+  if (new Date(`${body.endDate}T00:00:00`) < new Date(`${body.startDate}T00:00:00`)) return "Invalid payroll date range";
+  return "";
+}
+
+function refreshPayrollPeriod(period: PayrollPeriod, actorId: string, action: string) {
+  period.rows = calculatePayrollRows(period.startDate, period.endDate);
+  period.warnings = calculatePayrollWarnings(period);
+  addPayrollVersion(period, actorId, action);
+}
+
+function calculatePayrollRows(startDate: string, endDate: string): PayrollSummaryRow[] {
+  const businessDays = countBusinessDays(startDate, endDate);
+  const periodLogs = attendanceLogs.filter((log) => isDateInRange(log.workDate, startDate, endDate));
+  const payrollUsers = users.filter((item) => item.role !== "Admin");
+
+  return payrollUsers.map((employee) => {
+    const employeeLogs = periodLogs.filter((log) => log.employeeId === employee.id);
+    const row: PayrollSummaryRow = {
+      employeeId: employee.id,
+      employeeName: employee.name,
+      department: roleDepartment(employee.role),
+      standardHours: businessDays * 8,
+      workedHours: 0,
+      overtimeHours: 0,
+      paidLeaveHours: 0,
+      unpaidLeaveHours: 0,
+      missingHours: 0,
+      lateCount: 0,
+      earlyLeaveCount: 0,
+      missingLogCount: 0,
+      totalPayableHours: 0
+    };
+
+    for (const log of employeeLogs) {
+      if (log.status === "On Leave") {
+        if (isUnpaidLeave(employee.id, log.workDate)) row.unpaidLeaveHours += 8;
+        else row.paidLeaveHours += 8;
+      } else {
+        row.workedHours += parseHourText(log.totalHours);
+      }
+      row.overtimeHours += parseHourText(log.overtime);
+      if (log.status === "Late") row.lateCount += 1;
+      if (log.status === "Early Leave") row.earlyLeaveCount += 1;
+      if (log.status === "Missing Check-out") row.missingLogCount += 1;
+      if (log.adjustmentStatus === "Pending") row.missingLogCount += 1;
+    }
+
+    row.totalPayableHours = roundHours(row.workedHours + row.overtimeHours + row.paidLeaveHours);
+    row.missingHours = Math.max(0, roundHours(row.standardHours - row.workedHours - row.paidLeaveHours - row.unpaidLeaveHours));
+    row.workedHours = roundHours(row.workedHours);
+    row.overtimeHours = roundHours(row.overtimeHours);
+    return row;
+  });
+}
+
+function calculatePayrollWarnings(period: PayrollPeriod) {
+  const warnings = period.rows
+    .filter((row) => row.missingLogCount > 0)
+    .map((row) => `${row.employeeName} has ${row.missingLogCount} unresolved attendance item(s)`);
+  const pendingAdjustments = attendanceLogs.filter((log) => isDateInRange(log.workDate, period.startDate, period.endDate) && log.adjustmentStatus === "Pending").length;
+  if (pendingAdjustments > 0) warnings.unshift(`${pendingAdjustments} pending attendance adjustment(s) must be resolved before locking`);
+  return [...new Set(warnings)];
+}
+
+function scopePayrollPeriod(period: PayrollPeriod, user: { id: string; role: string }) {
+  if (user.role !== "Manager") return period;
+  const teamEmployeeIds = new Set(attendanceLogs.filter((log) => log.managerId === user.id || log.employeeId === user.id).map((log) => log.employeeId));
+  return { ...period, rows: period.rows.filter((row) => teamEmployeeIds.has(row.employeeId)) };
+}
+
+function lockAttendanceLogsForPeriod(period: PayrollPeriod) {
+  attendanceLogs.forEach((log) => {
+    if (isDateInRange(log.workDate, period.startDate, period.endDate)) log.payrollLocked = true;
+  });
+}
+
+function unlockAttendanceLogsForPeriod(period: PayrollPeriod) {
+  attendanceLogs.forEach((log) => {
+    if (isDateInRange(log.workDate, period.startDate, period.endDate)) log.payrollLocked = false;
+  });
+}
+
+function addPayrollVersion(period: PayrollPeriod, actorId: string, action: string) {
+  period.versions.unshift({
+    version: period.versions.length + 1,
+    action,
+    actorId,
+    createdAt: new Date().toISOString(),
+    notes: `${action} with ${period.rows.length} employee row(s) and ${period.warnings.length} warning(s)`
+  });
+}
+
+function toPayrollExportRows(period: PayrollPeriod) {
+  return [
+    ["Employee", "Department", "Standard", "Worked", "Overtime", "Paid leave", "Unpaid leave", "Missing", "Status"],
+    ...period.rows.map((row) => [
+      row.employeeName,
+      row.department,
+      String(row.standardHours),
+      String(row.workedHours),
+      String(row.overtimeHours),
+      String(row.paidLeaveHours),
+      String(row.unpaidLeaveHours),
+      String(row.missingLogCount),
+      period.status
+    ])
+  ];
+}
+
+function isUnpaidLeave(employeeId: string, workDate: string) {
+  return leaveRequests.some((request) => request.employeeId === employeeId && request.type === "Unpaid Leave" && request.status === "Approved" && isDateInRange(workDate, request.startDate, request.endDate));
+}
+
+function countBusinessDays(startDate: string, endDate: string) {
+  let count = 0;
+  const cursor = new Date(`${startDate}T00:00:00`);
+  const end = new Date(`${endDate}T00:00:00`);
+  while (cursor <= end) {
+    const day = cursor.getDay();
+    if (day !== 0 && day !== 6) count += 1;
+    cursor.setDate(cursor.getDate() + 1);
+  }
+  return count;
+}
+
+function isDateInRange(workDate: string, startDate: string, endDate: string) {
+  return workDate >= startDate && workDate <= endDate;
+}
+
+function parseHourText(value: string) {
+  const match = value.match(/(\d+)h\s*(\d+)m/);
+  if (!match) return 0;
+  return Number(match[1]) + Number(match[2]) / 60;
+}
+
+function roundHours(value: number) {
+  return Math.round(value * 100) / 100;
+}
+
+
+function canViewEmployees(role: string) {
+  return role === "Manager" || role === "HR" || role === "Payroll" || role === "Admin";
+}
+
+function canManageEmployees(role: string) {
+  return role === "HR" || role === "Admin";
+}
+
+function getRoleScopedEmployees(sourceUsers: User[], user: { id: string; role: string }) {
+  if (user.role === "Manager") return sourceUsers.filter((item) => item.id === user.id || item.managerId === user.id);
+  if (user.role === "Payroll") return sourceUsers.filter((item) => item.role !== "Admin");
+  if (user.role === "Employee") return [];
+  return sourceUsers;
+}
+
+function publicEmployee(user: User) {
+  return { ...publicUser(user), locked: user.locked, employmentStatus: user.employmentStatus ?? (user.locked ? "Locked" : "Active") };
+}
+
+function validateEmployeeBody(body: Partial<User>) {
+  const allowedRoles: UserRole[] = ["Employee", "Manager", "HR", "Payroll", "Admin"];
+  if (!body.name?.trim() || !body.email?.trim() || !body.subtitle?.trim()) return "Required employee fields are missing";
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(body.email)) return "Invalid email";
+  if (body.role && !allowedRoles.includes(body.role)) return "Invalid role";
+  return "";
+}
+
+function buildEmployee(body: Partial<User>): User {
+  const now = Date.now();
+  const role = body.role ?? "Employee";
+  const locked = Boolean(body.locked) || body.employmentStatus === "Locked";
+  return {
+    id: body.id || `u-employee-${now}`,
+    name: body.name?.trim() ?? "",
+    email: body.email?.trim().toLowerCase() ?? "",
+    role,
+    subtitle: body.subtitle?.trim() || roleDepartment(role),
+    employeeCode: body.employeeCode?.trim() || `EMP-${String(now).slice(-5)}`,
+    phone: body.phone?.trim() || "",
+    position: body.position?.trim() || role,
+    managerId: body.managerId || (role === "Manager" || role === "Admin" ? "u-admin" : "u-manager"),
+    hireDate: body.hireDate || new Date().toISOString().slice(0, 10),
+    employmentStatus: locked ? "Locked" : (body.employmentStatus ?? "Active"),
+    schedulePolicy: body.schedulePolicy?.trim() || "Standard 8h",
+    attendancePolicy: body.attendancePolicy?.trim() || "Office check-in",
+    leavePolicy: body.leavePolicy?.trim() || "Annual 12 days",
+    remainingLeaveDays: Number.isFinite(body.remainingLeaveDays) ? Number(body.remainingLeaveDays) : 12,
+    locked
+  };
+}
+
+function updateEmployee(employee: User, body: Partial<User>) {
+  if (typeof body.name === "string") employee.name = body.name.trim();
+  if (typeof body.email === "string") employee.email = body.email.trim().toLowerCase();
+  if (body.role) employee.role = body.role;
+  if (typeof body.subtitle === "string") employee.subtitle = body.subtitle.trim();
+  if (typeof body.employeeCode === "string") employee.employeeCode = body.employeeCode.trim();
+  if (typeof body.phone === "string") employee.phone = body.phone.trim();
+  if (typeof body.position === "string") employee.position = body.position.trim();
+  if (typeof body.managerId === "string") employee.managerId = body.managerId;
+  if (typeof body.hireDate === "string") employee.hireDate = body.hireDate;
+  if (body.employmentStatus) employee.employmentStatus = body.employmentStatus;
+  if (typeof body.schedulePolicy === "string") employee.schedulePolicy = body.schedulePolicy.trim();
+  if (typeof body.attendancePolicy === "string") employee.attendancePolicy = body.attendancePolicy.trim();
+  if (typeof body.leavePolicy === "string") employee.leavePolicy = body.leavePolicy.trim();
+  if (typeof body.remainingLeaveDays === "number" && Number.isFinite(body.remainingLeaveDays)) employee.remainingLeaveDays = Math.max(0, Math.floor(body.remainingLeaveDays));
+  employee.locked = Boolean(body.locked) || employee.employmentStatus === "Locked";
+}
+
+function parseEmployeeImportRows(rows: string) {
+  const errors: string[] = [];
+  const parsedUsers: User[] = [];
+  const allowedRoles: UserRole[] = ["Employee", "Manager", "HR", "Payroll", "Admin"];
+  rows.split(/\r?\n/).forEach((line, index) => {
+    if (!line.trim()) return;
+    const [name = "", email = "", role = "Employee", department = "", position = ""] = line.split(",").map((item) => item.trim());
+    const normalizedEmail = email.toLowerCase();
+    if (!name || !normalizedEmail || !department || !allowedRoles.includes(role as UserRole) || users.some((item) => item.email.toLowerCase() === normalizedEmail) || parsedUsers.some((item) => item.email === normalizedEmail)) {
+      errors.push(`Row ${index + 1}: name, email, role and department are required and email must be unique`);
+      return;
+    }
+    parsedUsers.push(buildEmployee({ name, email: normalizedEmail, role: role as UserRole, subtitle: department, position, employeeCode: `IMP-${String(index + 1).padStart(3, "0")}` }));
+  });
+  return { users: parsedUsers, errors };
+}
+
+function toEmployeeExportRows(sourceUsers: User[]) {
+  return [
+    ["Employee code", "Name", "Email", "Role", "Department", "Position", "Manager", "Hire date", "Status"],
+    ...sourceUsers.map((employee) => [
+      employee.employeeCode ?? "",
+      employee.name,
+      employee.email,
+      employee.role,
+      employee.subtitle,
+      employee.position ?? "",
+      users.find((manager) => manager.id === employee.managerId)?.name ?? "",
+      employee.hireDate ?? "",
+      employee.locked || employee.employmentStatus === "Locked" ? "Locked" : employee.employmentStatus ?? "Active"
+    ])
+  ];
+}
 
 function canViewTeamDashboard(role: string) {
   return role === "Manager" || role === "HR" || role === "Admin";
@@ -982,3 +1557,4 @@ function readJsonBody<T>(request: IncomingMessage): Promise<T> {
     });
   });
 }
+

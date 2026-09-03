@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { dashboardData } from "../data/mockData";
 import type { Translation } from "../i18n";
+import { translateRole } from "../utils/localize";
 import type { AttendanceLog, AttendanceSession, DashboardMetric, User } from "../types";
 import { addDays, formatClockTime, formatDuration, formatHolidayRange, formatSummaryDate } from "../utils/time";
 import { ClockIcon, HolidayIcon, LeaveIcon, LoginIcon, LogoutIcon, WarningIcon } from "./icons";
@@ -172,7 +173,7 @@ export function Dashboard({
             <h3>{roleOverview.title}</h3>
             <p>{roleOverview.description}</p>
           </div>
-          <strong>{user.role}</strong>
+          <strong>{translateRole(user.role, t)}</strong>
         </article>
 
         <div className="action-grid">
