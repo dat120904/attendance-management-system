@@ -8,7 +8,7 @@ import {
   recalculatePayrollPeriod,
   unlockPayrollPeriod
 } from "../api";
-import type { AttendanceLog, PayrollPeriod, PayrollSummaryRow, User } from "../types";
+import type { AttendanceLog, PayrollPeriod, PayrollSummaryRow, SystemSettings, User } from "../types";
 import type { Translation } from "../i18n";
 import { translateDepartment, translatePayrollStatus } from "../utils/localize";
 
@@ -18,11 +18,12 @@ type PayrollSummariesPageProps = {
   periods: PayrollPeriod[];
   onLogsChange: (logs: AttendanceLog[]) => void;
   onPeriodsChange: (periods: PayrollPeriod[]) => void;
+  settings: SystemSettings;
   t: Translation;
   user: User;
 };
 
-export function PayrollSummariesPage({ authToken, logs, periods, onLogsChange, onPeriodsChange, t, user }: PayrollSummariesPageProps) {
+export function PayrollSummariesPage({ authToken, logs, periods, onLogsChange, onPeriodsChange, settings, t, user }: PayrollSummariesPageProps) {
   const labels = {
     title: t.payrollSummaries,
     scopeEmployee: t.payrollScopeEmployee,
@@ -107,8 +108,8 @@ export function PayrollSummariesPage({ authToken, logs, periods, onLogsChange, o
   const sourcePeriods = remotePeriods ?? periods;
   const displayPeriods = useMemo(() => {
     if (sourcePeriods.length > 0) return sourcePeriods;
-    return [buildLocalPayrollPeriod({ name: labels.currentDemoPeriod, startDate: form.startDate, endDate: form.endDate }, logs, "system", "seeded", t, "payroll-current-demo")];
-  }, [form.endDate, form.startDate, logs, sourcePeriods]);
+    return [buildLocalPayrollPeriod({ name: labels.currentDemoPeriod, startDate: form.startDate, endDate: form.endDate }, logs, settings, "system", "seeded", t, "payroll-current-demo")];
+  }, [form.endDate, form.startDate, logs, settings, sourcePeriods]);
   const scopedPeriods = useMemo(() => displayPeriods.map((period) => scopePayrollPeriod(period, logs, user)), [displayPeriods, logs, user]);
   const selectedPeriod = scopedPeriods.find((period) => period.id === selectedPeriodId) ?? scopedPeriods[0] ?? null;
   const totals = selectedPeriod ? totalRows(selectedPeriod.rows) : null;
@@ -138,7 +139,7 @@ export function PayrollSummariesPage({ authToken, logs, periods, onLogsChange, o
       return;
     }
 
-    const period = buildLocalPayrollPeriod(form, logs, user.id, "created", t);
+    const period = buildLocalPayrollPeriod(form, logs, settings, user.id, "created", t);
     onPeriodsChange([period, ...periods]);
     setSelectedPeriodId(period.id);
     setNotice(labels.saved);
@@ -158,7 +159,7 @@ export function PayrollSummariesPage({ authToken, logs, periods, onLogsChange, o
       return;
     }
 
-    const nextPeriod = runLocalAction(action, selectedPeriod, logs, user, t);
+    const nextPeriod = runLocalAction(action, selectedPeriod, logs, settings, user, t);
     if (action === "lock" && nextPeriod.warnings.length > 0) {
       setNotice(labels.lockedBlocked);
       return;
@@ -355,8 +356,8 @@ async function runRemoteAction(action: "recalculate" | "confirm" | "lock" | "unl
   return unlockPayrollPeriod(token, periodId);
 }
 
-function runLocalAction(action: "recalculate" | "confirm" | "lock" | "unlock", period: PayrollPeriod, logs: AttendanceLog[], user: User, t: Translation) {
-  const next = { ...period, rows: calculatePayrollRows(period.startDate, period.endDate, logs), versions: [...period.versions] };
+function runLocalAction(action: "recalculate" | "confirm" | "lock" | "unlock", period: PayrollPeriod, logs: AttendanceLog[], settings: SystemSettings, user: User, t: Translation) {
+  const next = { ...period, rows: calculatePayrollRows(period.startDate, period.endDate, logs, settings), versions: [...period.versions] };
   next.warnings = calculateWarnings(next, t);
   if (action === "confirm") next.status = "Confirmed";
   if (action === "lock" && next.warnings.length === 0) next.status = "Locked";
@@ -365,16 +366,16 @@ function runLocalAction(action: "recalculate" | "confirm" | "lock" | "unlock", p
   return next;
 }
 
-function buildLocalPayrollPeriod(form: { name: string; startDate: string; endDate: string }, logs: AttendanceLog[], actorId: string, action: string, t: Translation, id = `payroll-${Date.now()}`): PayrollPeriod {
+function buildLocalPayrollPeriod(form: { name: string; startDate: string; endDate: string }, logs: AttendanceLog[], settings: SystemSettings, actorId: string, action: string, t: Translation, id = `payroll-${Date.now()}`): PayrollPeriod {
   const period: PayrollPeriod = { id, name: form.name, startDate: form.startDate, endDate: form.endDate, status: "Draft", createdBy: actorId, createdAt: new Date().toISOString(), warnings: [], rows: [], versions: [] };
-  period.rows = calculatePayrollRows(period.startDate, period.endDate, logs);
+  period.rows = calculatePayrollRows(period.startDate, period.endDate, logs, settings);
   period.warnings = calculateWarnings(period, t);
   period.versions = [{ version: 1, action, actorId, createdAt: new Date().toISOString(), notes: "created payroll period" }];
   return period;
 }
 
-function calculatePayrollRows(startDate: string, endDate: string, logs: AttendanceLog[]): PayrollSummaryRow[] {
-  const businessDays = countBusinessDays(startDate, endDate);
+function calculatePayrollRows(startDate: string, endDate: string, logs: AttendanceLog[], settings: SystemSettings): PayrollSummaryRow[] {
+  const businessDays = countBusinessDays(startDate, endDate, settings);
   const map = new Map<string, PayrollSummaryRow>();
   const periodLogs = logs.filter((log) => log.workDate >= startDate && log.workDate <= endDate);
   for (const log of periodLogs) {
@@ -428,13 +429,15 @@ function getScopeText(user: User, t: Translation) {
   return t.payrollScopeCompany;
 }
 
-function countBusinessDays(startDate: string, endDate: string) {
+function countBusinessDays(startDate: string, endDate: string, settings: SystemSettings) {
   let count = 0;
   const cursor = new Date(`${startDate}T00:00:00`);
   const end = new Date(`${endDate}T00:00:00`);
   while (cursor <= end) {
     const day = cursor.getDay();
-    if (day !== 0 && day !== 6) count += 1;
+    const isoDate = cursor.toISOString().slice(0, 10);
+    const isHoliday = settings.holidays.some((holiday) => isoDate >= holiday.startDate && isoDate <= holiday.endDate);
+    if (day !== 0 && day !== 6 && !isHoliday) count += 1;
     cursor.setDate(cursor.getDate() + 1);
   }
   return count;

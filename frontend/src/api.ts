@@ -1,4 +1,4 @@
-import type { AttendanceLog, LeaveAttachment, LeaveRequest, LeaveType, LeaveWorkflowConfig, PayrollPeriod, User } from "./types";
+import type { AttendanceLog, LeaveAttachment, LeaveRequest, LeaveType, LeaveWorkflowConfig, PayrollPeriod, SystemSettings, User } from "./types";
 
 const API_BASE_URL = import.meta.env.VITE_API_URL ?? "http://localhost:4000";
 
@@ -49,6 +49,10 @@ type EmployeeResponse = {
 type EmployeeImportResponse = {
   users: User[];
   errors: string[];
+};
+
+type SettingsResponse = {
+  settings: SystemSettings;
 };
 
 type AuditLogsResponse = {
@@ -239,6 +243,18 @@ export async function downloadEmployeeExport(token: string, format: "excel" | "p
   }
 
   return response.blob();
+}
+
+export async function fetchSettings(token: string) {
+  return request<SettingsResponse>("/api/settings", { token });
+}
+
+export async function updateSettings(token: string, settings: SystemSettings) {
+  return request<SettingsResponse>("/api/settings", {
+    method: "PUT",
+    token,
+    body: JSON.stringify(settings)
+  });
 }
 
 export async function fetchPayrollPeriods(token: string) {

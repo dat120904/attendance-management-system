@@ -6,13 +6,14 @@ import { LeaveRequestsPage } from "./components/LeaveRequestsPage";
 import { PayrollSummariesPage } from "./components/PayrollSummariesPage";
 import { EmployeeManagementPage } from "./components/EmployeeManagementPage";
 import { ProfilePage } from "./components/ProfilePage";
+import { SettingsPage } from "./components/SettingsPage";
 import { Sidebar } from "./components/Sidebar";
 import { Topbar } from "./components/Topbar";
 import { loginWithPassword, registerAccount } from "./api";
-import { dashboardData, demoUsers, leaveRequests as initialLeaveRequests, leaveWorkflowConfig as initialLeaveWorkflowConfig, payrollPeriods as initialPayrollPeriods } from "./data/mockData";
+import { dashboardData, demoUsers, leaveRequests as initialLeaveRequests, leaveWorkflowConfig as initialLeaveWorkflowConfig, payrollPeriods as initialPayrollPeriods, systemSettings as initialSystemSettings } from "./data/mockData";
 import type { Language } from "./i18n";
 import { translations } from "./i18n";
-import type { AppPage, AttendanceLog, AttendanceSession, LeaveRequest, LeaveWorkflowConfig, PayrollPeriod, User } from "./types";
+import type { AppPage, AttendanceLog, AttendanceSession, LeaveRequest, LeaveWorkflowConfig, PayrollPeriod, SystemSettings, User } from "./types";
 import { formatClockTime, formatLogDate, formatTotalHours } from "./utils/time";
 
 export default function App() {
@@ -35,6 +36,7 @@ export default function App() {
   const [leaveRequests, setLeaveRequests] = useState<LeaveRequest[]>(initialLeaveRequests);
   const [leaveWorkflowConfig, setLeaveWorkflowConfig] = useState<LeaveWorkflowConfig>(initialLeaveWorkflowConfig);
   const [payrollPeriods, setPayrollPeriods] = useState<PayrollPeriod[]>(initialPayrollPeriods);
+  const [systemSettings, setSystemSettings] = useState<SystemSettings>(initialSystemSettings);
   const [attendanceMessage, setAttendanceMessage] = useState("");
   const [attendanceError, setAttendanceError] = useState("");
   const [isAttendanceBusy, setIsAttendanceBusy] = useState(false);
@@ -283,6 +285,7 @@ export default function App() {
             periods={payrollPeriods}
             onLogsChange={setLogs}
             onPeriodsChange={setPayrollPeriods}
+            settings={systemSettings}
             t={t}
             user={user}
           />
@@ -297,8 +300,9 @@ export default function App() {
             users={users}
           />
         )}
+        {activePage === "settings" && <SettingsPage authToken={authToken} settings={systemSettings} onSettingsChange={setSystemSettings} t={t} user={user} />}
         {activePage === "profile" && <ProfilePage t={t} user={user} />}
-        {activePage !== "dashboard" && activePage !== "attendanceLogs" && activePage !== "leaveRequests" && activePage !== "payrollSummaries" && activePage !== "employeeManagement" && activePage !== "profile" && (
+        {activePage !== "dashboard" && activePage !== "attendanceLogs" && activePage !== "leaveRequests" && activePage !== "payrollSummaries" && activePage !== "employeeManagement" && activePage !== "settings" && activePage !== "profile" && (
           <section className="placeholder-page">
             <h3>{t[activePage]}</h3>
             <p>{t.pageComingSoon}</p>
