@@ -1,4 +1,4 @@
-﻿import type { DashboardData, LeaveRequest, LeaveWorkflowConfig, PayrollPeriod, SystemSettings, User } from "../types";
+﻿import type { AppNotification, DashboardData, HelpArticle, LeaveRequest, LeaveWorkflowConfig, PayrollPeriod, SupportTicket, SystemSettings, User } from "../types";
 import { addDays, formatLogDate, formatSummaryDate, getNextThanksgiving } from "../utils/time";
 
 export const demoUsers: User[] = [
@@ -338,3 +338,22 @@ export const systemSettings: SystemSettings = {
     retentionDays: 365
   }
 };
+
+export const notifications: AppNotification[] = [
+  { id: "notif-welcome", recipientId: "u-manager", title: "Welcome back", message: "Your Workforce Pro workspace is ready.", category: "system", read: false, createdAt: today.toISOString(), emailStatus: "Not sent", retryCount: 0 },
+  { id: "notif-leave", recipientId: "u-employee", title: "Leave request approved", message: "Your annual leave request was approved.", category: "leave", read: false, createdAt: today.toISOString(), emailStatus: "Sent", retryCount: 0 },
+  { id: "notif-attendance", recipientRole: "HR", title: "Attendance exception", message: "Linh has an early leave log pending review.", category: "attendance", read: false, createdAt: today.toISOString(), emailStatus: "Sent", retryCount: 0 },
+  { id: "notif-checkout", recipientId: "u-employee", title: "Check-out reminder", message: "Your workday is nearly complete. Remember to check out.", category: "checkout", read: true, createdAt: today.toISOString(), emailStatus: "Not sent", retryCount: 0 },
+  { id: "notif-adjustment", recipientId: "u-manager", title: "Attendance adjustment requested", message: "A team member requested attendance adjustment approval.", category: "adjustment", read: false, createdAt: today.toISOString(), emailStatus: "Failed", retryCount: 1 },
+  { id: "notif-payroll", recipientRole: "Payroll", title: "Payroll period needs confirmation", message: "Current payroll period has items waiting for confirmation.", category: "payroll", read: false, createdAt: today.toISOString(), emailStatus: "Failed", retryCount: 1 }
+];
+
+export const helpArticles: HelpArticle[] = [
+  { id: "help-faq", title: "Common questions", category: "faq", body: "Use the sidebar to open attendance logs, leave requests, payroll summaries and settings based on your role.", allowedRoles: ["Employee", "Manager", "HR", "Payroll", "Admin"] },
+  { id: "help-checkin", title: "Check-in and check-out", category: "check-in", body: "Open Dashboard and use the check-in button. Check out when your session ends.", allowedRoles: ["Employee", "Manager", "HR", "Payroll", "Admin"] },
+  { id: "help-leave", title: "Create leave request", category: "leave", body: "Open Leave Requests, choose leave type, dates, reason and attachment if required, then submit.", allowedRoles: ["Employee", "Manager", "HR", "Admin"] },
+  { id: "help-adjustment", title: "Request attendance adjustment", category: "adjustment", body: "Open Attendance Logs, select the log and request adjustment if the payroll period is not locked.", allowedRoles: ["Employee", "Manager", "HR", "Admin"] },
+  { id: "help-payroll", title: "Payroll confirmation", category: "payroll", body: "Payroll and Admin review warnings, recalculate, confirm and lock payroll periods.", allowedRoles: ["Manager", "HR", "Payroll", "Admin"] }
+];
+
+export const supportTickets: SupportTicket[] = [];

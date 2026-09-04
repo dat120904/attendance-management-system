@@ -6,14 +6,15 @@ import { LeaveRequestsPage } from "./components/LeaveRequestsPage";
 import { PayrollSummariesPage } from "./components/PayrollSummariesPage";
 import { EmployeeManagementPage } from "./components/EmployeeManagementPage";
 import { ProfilePage } from "./components/ProfilePage";
+import { HelpCenterPage } from "./components/HelpCenterPage";
 import { SettingsPage } from "./components/SettingsPage";
 import { Sidebar } from "./components/Sidebar";
 import { Topbar } from "./components/Topbar";
-import { loginWithPassword, registerAccount } from "./api";
-import { dashboardData, demoUsers, leaveRequests as initialLeaveRequests, leaveWorkflowConfig as initialLeaveWorkflowConfig, payrollPeriods as initialPayrollPeriods, systemSettings as initialSystemSettings } from "./data/mockData";
+import { fetchNotifications, markAllNotificationsRead, markNotificationRead, retryNotificationEmail, loginWithPassword, registerAccount } from "./api";
+import { dashboardData, demoUsers, helpArticles as initialHelpArticles, leaveRequests as initialLeaveRequests, leaveWorkflowConfig as initialLeaveWorkflowConfig, notifications as initialNotifications, payrollPeriods as initialPayrollPeriods, supportTickets as initialSupportTickets, systemSettings as initialSystemSettings } from "./data/mockData";
 import type { Language } from "./i18n";
 import { translations } from "./i18n";
-import type { AppPage, AttendanceLog, AttendanceSession, LeaveRequest, LeaveWorkflowConfig, PayrollPeriod, SystemSettings, User } from "./types";
+import type { AppPage, AppNotification, AttendanceLog, AttendanceSession, HelpArticle, LeaveRequest, LeaveWorkflowConfig, PayrollPeriod, SupportTicket, SystemSettings, User } from "./types";
 import { formatClockTime, formatLogDate, formatTotalHours } from "./utils/time";
 
 export default function App() {
@@ -37,6 +38,9 @@ export default function App() {
   const [leaveWorkflowConfig, setLeaveWorkflowConfig] = useState<LeaveWorkflowConfig>(initialLeaveWorkflowConfig);
   const [payrollPeriods, setPayrollPeriods] = useState<PayrollPeriod[]>(initialPayrollPeriods);
   const [systemSettings, setSystemSettings] = useState<SystemSettings>(initialSystemSettings);
+  const [notifications, setNotifications] = useState<AppNotification[]>(initialNotifications);
+  const [helpArticles] = useState<HelpArticle[]>(initialHelpArticles);
+  const [, setSupportTickets] = useState<SupportTicket[]>(initialSupportTickets);
   const [attendanceMessage, setAttendanceMessage] = useState("");
   const [attendanceError, setAttendanceError] = useState("");
   const [isAttendanceBusy, setIsAttendanceBusy] = useState(false);
@@ -229,6 +233,61 @@ export default function App() {
     return <AuthPage language={language} onLanguageChange={setLanguage} onLogin={handleLogin} onNewEmployeeCheckIn={handleNewEmployeeCheckIn} onQuickCheckIn={handleQuickCheckIn} onRegister={handleRegister} t={t} users={users} />;
   }
 
+  function scopedLocalNotifications(currentUser: User | null = user) {
+    if (!currentUser) return [];
+    return notifications.filter((notification) => currentUser.role === "Admin" || notification.recipientId === currentUser.id || notification.recipientRole === currentUser.role);
+  }
+
+  async function loadNotifications(token: string) {
+    try {
+      const result = await fetchNotifications(token);
+      setNotifications(result.notifications);
+    } catch {
+      // Keep local demo notifications when backend is not running.
+    }
+  }
+
+  async function handleMarkNotificationRead(notificationId: string) {
+    setNotifications((current) => current.map((item) => item.id === notificationId ? { ...item, read: true } : item));
+    if (authToken) {
+      try {
+        const result = await markNotificationRead(authToken, notificationId);
+        setNotifications((current) => current.map((item) => item.id === notificationId ? result.notification : item));
+      } catch {
+        // Local state already reflects the intended UI action.
+      }
+    }
+  }
+
+  async function handleMarkAllNotificationsRead() {
+    setNotifications((current) => current.map((item) => scopedLocalNotifications().some((visible) => visible.id === item.id) ? { ...item, read: true } : item));
+    if (authToken) {
+      try {
+        const result = await markAllNotificationsRead(authToken);
+        setNotifications(result.notifications);
+      } catch {
+        // Local state already reflects the intended UI action.
+      }
+    }
+  }
+
+  async function handleRetryNotificationEmail(notificationId: string) {
+    setNotifications((current) => current.map((item) => item.id === notificationId ? { ...item, emailStatus: "Sent", retryCount: item.retryCount + 1 } : item));
+    if (authToken) {
+      try {
+        const result = await retryNotificationEmail(authToken, notificationId);
+        setNotifications((current) => current.map((item) => item.id === notificationId ? result.notification : item));
+      } catch {
+        // Local retry state is enough for demo mode.
+      }
+    }
+  }
+
+  function handleSupportTicketCreated(ticket: SupportTicket) {
+    setSupportTickets((current) => [ticket, ...current]);
+    const notification: AppNotification = { id: "notif-ticket-local-" + Date.now(), recipientRole: "Admin", title: "New support request", message: ticket.requesterName + ": " + ticket.subject, category: "system", read: false, createdAt: new Date().toISOString(), emailStatus: "Sent", retryCount: 0 };
+    setNotifications((current) => [notification, ...current]);
+  }
   function handleLogout() {
     setAuthToken(null);
     setUser(null);
@@ -246,7 +305,11 @@ export default function App() {
           language={language}
           onAttendanceAction={attendanceSession.status === "working" ? handleCheckOut : handleCheckIn}
           onLanguageChange={setLanguage}
+          notifications={scopedLocalNotifications()}
           onLogout={handleLogout}
+          onMarkAllNotificationsRead={() => void handleMarkAllNotificationsRead()}
+          onMarkNotificationRead={(notificationId) => void handleMarkNotificationRead(notificationId)}
+          onRetryNotificationEmail={(notificationId) => void handleRetryNotificationEmail(notificationId)}
           onOpenProfile={() => setActivePage("profile")}
           t={t}
           user={user}
@@ -301,8 +364,9 @@ export default function App() {
           />
         )}
         {activePage === "settings" && <SettingsPage authToken={authToken} settings={systemSettings} onSettingsChange={setSystemSettings} t={t} user={user} />}
+        {activePage === "helpCenter" && <HelpCenterPage articles={helpArticles} authToken={authToken} onTicketCreated={handleSupportTicketCreated} t={t} user={user} />}
         {activePage === "profile" && <ProfilePage t={t} user={user} />}
-        {activePage !== "dashboard" && activePage !== "attendanceLogs" && activePage !== "leaveRequests" && activePage !== "payrollSummaries" && activePage !== "employeeManagement" && activePage !== "settings" && activePage !== "profile" && (
+        {activePage !== "dashboard" && activePage !== "attendanceLogs" && activePage !== "leaveRequests" && activePage !== "payrollSummaries" && activePage !== "employeeManagement" && activePage !== "settings" && activePage !== "helpCenter" && activePage !== "profile" && (
           <section className="placeholder-page">
             <h3>{t[activePage]}</h3>
             <p>{t.pageComingSoon}</p>
