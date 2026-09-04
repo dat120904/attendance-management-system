@@ -7,11 +7,15 @@ import { getUserByToken, login, logout, publicUser, registerAccount, setUserPass
 import type { UserRole } from "./types.js";
 
 const port = Number(process.env.PORT ?? 4000);
+const allowedOrigins = (process.env.ALLOWED_ORIGINS ?? process.env.FRONTEND_URL ?? "http://localhost:5173")
+  .split(",")
+  .map((origin) => origin.trim())
+  .filter(Boolean);
 const uploadRoot = resolve(process.cwd(), "uploads", "leave-attachments");
 const maxAttachmentBytes = 10 * 1024 * 1024;
 
 const server = createServer(async (request, response) => {
-  setCorsHeaders(response);
+  setCorsHeaders(response, request);
 
   if (request.method === "OPTIONS") {
     response.writeHead(204);
@@ -20,6 +24,11 @@ const server = createServer(async (request, response) => {
   }
 
   try {
+    if (request.method === "GET" && request.url === "/api/health") {
+      sendJson(response, 200, { ok: true, service: "workforce-pro-api" });
+      return;
+    }
+
     if (request.method === "POST" && request.url === "/api/auth/login") {
       const body = await readJsonBody<{ email?: string; password?: string }>(request);
       const result = login(body.email ?? "", body.password ?? "");
@@ -1595,8 +1604,11 @@ function getBearerToken(request: IncomingMessage) {
   return authorization.slice("Bearer ".length);
 }
 
-function setCorsHeaders(response: ServerResponse) {
-  response.setHeader("Access-Control-Allow-Origin", "http://localhost:5173");
+function setCorsHeaders(response: ServerResponse, request?: IncomingMessage) {
+  const requestOrigin = request?.headers.origin;
+  const origin = requestOrigin && allowedOrigins.includes(requestOrigin) ? requestOrigin : allowedOrigins[0] ?? "http://localhost:5173";
+  response.setHeader("Access-Control-Allow-Origin", origin);
+  response.setHeader("Vary", "Origin");
   response.setHeader("Access-Control-Allow-Methods", "GET,POST,PUT,DELETE,OPTIONS");
   response.setHeader("Access-Control-Allow-Headers", "Content-Type,Authorization");
 }
