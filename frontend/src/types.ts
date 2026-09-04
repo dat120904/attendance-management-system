@@ -197,6 +197,39 @@ export type PayrollPeriod = {
   versions: PayrollVersion[];
 };
 
+export type NotificationCategory = "leave" | "attendance" | "checkout" | "adjustment" | "payroll" | "system";
+
+export type AppNotification = {
+  id: string;
+  recipientId?: string;
+  recipientRole?: UserRole;
+  title: string;
+  message: string;
+  category: NotificationCategory;
+  read: boolean;
+  createdAt: string;
+  emailStatus: "Not sent" | "Sent" | "Failed";
+  retryCount: number;
+};
+
+export type HelpArticle = {
+  id: string;
+  title: string;
+  category: "faq" | "check-in" | "leave" | "adjustment" | "payroll";
+  body: string;
+  allowedRoles: UserRole[];
+};
+
+export type SupportTicket = {
+  id: string;
+  requesterId: string;
+  requesterName: string;
+  subject: string;
+  message: string;
+  status: "Open" | "In Progress" | "Resolved";
+  createdAt: string;
+};
+
 export type DashboardMetric = {
   label: string;
   value: string;

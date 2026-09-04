@@ -1,8 +1,8 @@
 ﻿import { createReadStream, existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { createServer, IncomingMessage, ServerResponse } from "node:http";
 import { join, resolve } from "node:path";
-import { activeAttendanceSessions, attendanceLogs, auditLogs, leaveRequests, leaveWorkflowConfig, payrollPeriods, systemSettings, users } from "./data.js";
-import type { AttendanceLog, LeaveAttachment, LeaveRequest, LeaveType, LeaveWorkflowConfig, PayrollPeriod, PayrollSummaryRow, SystemSettings, User } from "./types.js";
+import { activeAttendanceSessions, attendanceLogs, auditLogs, helpArticles, leaveRequests, leaveWorkflowConfig, notifications, payrollPeriods, supportTickets, systemSettings, users } from "./data.js";
+import type { AttendanceLog, AppNotification, HelpArticle, LeaveAttachment, LeaveRequest, LeaveType, LeaveWorkflowConfig, PayrollPeriod, PayrollSummaryRow, SystemSettings, User } from "./types.js";
 import { getUserByToken, login, logout, publicUser, registerAccount, setUserPassword } from "./auth.js";
 import type { UserRole } from "./types.js";
 
@@ -510,6 +510,7 @@ const server = createServer(async (request, response) => {
 
       if (action === "reject") {
         requestItem.status = "Rejected";
+        addNotification({ recipientId: requestItem.employeeId, title: "Leave request rejected", message: "Your leave request was rejected.", category: "leave" });
         addAudit(user.id, "leave.request.rejected", requestItem.id);
         sendJson(response, 200, { request: requestItem });
         return;
@@ -517,12 +518,14 @@ const server = createServer(async (request, response) => {
 
       if (requestItem.status === "Pending Manager" && user.role === "Manager" && leaveWorkflowConfig.requireHrApproval) {
         requestItem.status = "Pending HR";
+        addNotification({ recipientRole: "HR", title: "Leave request needs HR approval", message: requestItem.employeeName + " has a leave request waiting for HR approval.", category: "leave" });
         addAudit(user.id, "leave.request.manager_approved", requestItem.id);
         sendJson(response, 200, { request: requestItem });
         return;
       }
 
       requestItem.status = "Approved";
+      addNotification({ recipientId: requestItem.employeeId, title: "Leave request approved", message: "Your leave request was approved.", category: "leave" });
       const employee = users.find((item) => item.id === requestItem.employeeId);
       if (employee && leaveWorkflowConfig.annualLeaveRequiresBalance && requestItem.type === "Annual Leave") {
         employee.remainingLeaveDays = Math.max(0, employee.remainingLeaveDays - requestItem.days);
@@ -535,6 +538,79 @@ const server = createServer(async (request, response) => {
       return;
     }
 
+
+    if (request.method === "GET" && request.url?.startsWith("/api/notifications")) {
+      const user = requireUser(request, response);
+      if (!user) return;
+      sendJson(response, 200, { notifications: getScopedNotifications(user) });
+      return;
+    }
+
+    if (request.method === "POST" && request.url?.match(/^\/api\/notifications\/[^/]+\/read$/)) {
+      const user = requireUser(request, response);
+      if (!user) return;
+      const notification = notifications.find((item) => item.id === request.url?.split("/")[3]);
+      if (!notification || !canViewNotification(user, notification)) {
+        sendJson(response, 404, { error: "Notification not found" });
+        return;
+      }
+      notification.read = true;
+      sendJson(response, 200, { notification });
+      return;
+    }
+
+    if (request.method === "POST" && request.url === "/api/notifications/read-all") {
+      const user = requireUser(request, response);
+      if (!user) return;
+      getScopedNotifications(user).forEach((item) => { item.read = true; });
+      sendJson(response, 200, { notifications: getScopedNotifications(user) });
+      return;
+    }
+
+    if (request.method === "POST" && request.url?.match(/^\/api\/notifications\/[^/]+\/retry-email$/)) {
+      const user = requireUser(request, response);
+      if (!user) return;
+      if (user.role !== "Admin" && user.role !== "HR" && user.role !== "Payroll") {
+        sendJson(response, 403, { error: "Forbidden" });
+        return;
+      }
+      const notification = notifications.find((item) => item.id === request.url?.split("/")[3]);
+      if (!notification || !canViewNotification(user, notification)) {
+        sendJson(response, 404, { error: "Notification not found" });
+        return;
+      }
+      notification.emailStatus = "Sent";
+      notification.retryCount += 1;
+      addAudit(user.id, "notification.email_retried", notification.id);
+      sendJson(response, 200, { notification });
+      return;
+    }
+
+    if (request.method === "GET" && request.url?.startsWith("/api/help/articles")) {
+      const user = requireUser(request, response);
+      if (!user) return;
+      const url = new URL(request.url, "http://" + request.headers.host);
+      const query = url.searchParams.get("query")?.trim().toLowerCase() ?? "";
+      const articles = helpArticles.filter((article) => article.allowedRoles.includes(user.role) && (!query || article.title.toLowerCase().includes(query) || article.body.toLowerCase().includes(query) || article.category.toLowerCase().includes(query)));
+      sendJson(response, 200, { articles });
+      return;
+    }
+
+    if (request.method === "POST" && request.url === "/api/help/support-tickets") {
+      const user = requireUser(request, response);
+      if (!user) return;
+      const body = await readJsonBody<{ subject?: string; message?: string }>(request);
+      if (!body.subject?.trim() || !body.message?.trim()) {
+        sendJson(response, 400, { error: "Subject and message are required" });
+        return;
+      }
+      const ticket = { id: "ticket-" + Date.now(), requesterId: user.id, requesterName: user.name, subject: body.subject.trim(), message: body.message.trim(), status: "Open" as const, createdAt: new Date().toISOString() };
+      supportTickets.unshift(ticket);
+      notifications.unshift({ id: "notif-ticket-" + Date.now(), recipientRole: "Admin", title: "New support request", message: user.name + ": " + ticket.subject, category: "system", read: false, createdAt: new Date().toISOString(), emailStatus: "Sent", retryCount: 0 });
+      addAudit(user.id, "support.ticket.created", ticket.id);
+      sendJson(response, 201, { ticket });
+      return;
+    }
 
     if (request.method === "GET" && request.url === "/api/settings") {
       const user = requireUser(request, response);
@@ -609,6 +685,7 @@ const server = createServer(async (request, response) => {
       };
       refreshPayrollPeriod(period, user.id, "created");
       payrollPeriods.unshift(period);
+      addNotification({ recipientRole: "Payroll", title: "Payroll period needs confirmation", message: period.name + " is ready for payroll review.", category: "payroll" });
       addAudit(user.id, "payroll.period.created", period.id);
       sendJson(response, 201, { period: scopePayrollPeriod(period, user) });
       return;
@@ -1381,6 +1458,17 @@ function escapePdfText(value: string) {
     .replace(/\)/g, "\\)");
 }
 
+function getScopedNotifications(user: { id: string; role: UserRole }) {
+  return notifications.filter((notification) => canViewNotification(user, notification));
+}
+
+function canViewNotification(user: { id: string; role: UserRole }, notification: AppNotification) {
+  if (user.role === "Admin") return true;
+  if (notification.recipientId === user.id) return true;
+  if (notification.recipientRole === user.role) return true;
+  return false;
+}
+
 function validateSystemSettings(body: Partial<SystemSettings>) {
   if (body.attendancePolicy) {
     if (!isTimeValue(body.attendancePolicy.standardStartTime) || !isTimeValue(body.attendancePolicy.standardEndTime)) return "Invalid attendance policy time";
@@ -1462,6 +1550,21 @@ function normalizeAttachment(attachment: LeaveAttachment | undefined, actorId: s
     uploadedAt: attachment.uploadedAt || new Date().toISOString(),
     uploadedBy: attachment.uploadedBy || actorId
   };
+}
+
+function addNotification(input: { recipientId?: string; recipientRole?: UserRole; title: string; message: string; category: AppNotification["category"] }) {
+  notifications.unshift({
+    id: "notif-" + Date.now() + "-" + Math.random().toString(36).slice(2, 6),
+    recipientId: input.recipientId,
+    recipientRole: input.recipientRole,
+    title: input.title,
+    message: input.message,
+    category: input.category,
+    read: false,
+    createdAt: new Date().toISOString(),
+    emailStatus: systemSettings.notifications.emailEnabled ? "Sent" : "Not sent",
+    retryCount: 0
+  });
 }
 
 function addAudit(actorId: string, action: string, targetId: string) {

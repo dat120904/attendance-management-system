@@ -1,4 +1,4 @@
-import type { AttendanceLog, LeaveAttachment, LeaveRequest, LeaveType, LeaveWorkflowConfig, PayrollPeriod, SystemSettings, User } from "./types";
+import type { AppNotification, AttendanceLog, HelpArticle, LeaveAttachment, LeaveRequest, LeaveType, LeaveWorkflowConfig, PayrollPeriod, SupportTicket, SystemSettings, User } from "./types";
 
 const API_BASE_URL = import.meta.env.VITE_API_URL ?? "http://localhost:4000";
 
@@ -53,6 +53,22 @@ type EmployeeImportResponse = {
 
 type SettingsResponse = {
   settings: SystemSettings;
+};
+
+type NotificationsResponse = {
+  notifications: AppNotification[];
+};
+
+type NotificationResponse = {
+  notification: AppNotification;
+};
+
+type HelpArticlesResponse = {
+  articles: HelpArticle[];
+};
+
+type SupportTicketResponse = {
+  ticket: SupportTicket;
 };
 
 type AuditLogsResponse = {
@@ -243,6 +259,31 @@ export async function downloadEmployeeExport(token: string, format: "excel" | "p
   }
 
   return response.blob();
+}
+
+export async function fetchNotifications(token: string) {
+  return request<NotificationsResponse>("/api/notifications", { token });
+}
+
+export async function markNotificationRead(token: string, notificationId: string) {
+  return request<NotificationResponse>("/api/notifications/" + notificationId + "/read", { method: "POST", token });
+}
+
+export async function markAllNotificationsRead(token: string) {
+  return request<NotificationsResponse>("/api/notifications/read-all", { method: "POST", token });
+}
+
+export async function retryNotificationEmail(token: string, notificationId: string) {
+  return request<NotificationResponse>("/api/notifications/" + notificationId + "/retry-email", { method: "POST", token });
+}
+
+export async function fetchHelpArticles(token: string, query: string) {
+  const search = new URLSearchParams({ query });
+  return request<HelpArticlesResponse>("/api/help/articles?" + search.toString(), { token });
+}
+
+export async function createSupportTicket(token: string, form: { subject: string; message: string }) {
+  return request<SupportTicketResponse>("/api/help/support-tickets", { method: "POST", token, body: JSON.stringify(form) });
 }
 
 export async function fetchSettings(token: string) {
