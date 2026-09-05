@@ -23,11 +23,14 @@ type SidebarProps = {
   onLogout: () => void;
   user: User;
   t: Translation;
+  isOpen: boolean;
+  onClose: () => void;
 };
 
-export function Sidebar({ activePage, onLogout, onNavigate, user, t }: SidebarProps) {
+export function Sidebar({ activePage, onLogout, onNavigate, user, t, isOpen, onClose }: SidebarProps) {
+  const navigate = (page: AppPage) => { onNavigate(page); onClose(); };
   return (
-    <aside className="sidebar" aria-label="Main navigation">
+    <aside id="main-navigation" className={`sidebar ${isOpen ? "is-open" : ""}`} aria-label="Main navigation">
       <div className="brand">
         <div className="brand-mark">
           <BuildingIcon />
@@ -40,7 +43,7 @@ export function Sidebar({ activePage, onLogout, onNavigate, user, t }: SidebarPr
 
       <nav className="main-nav">
         {navItems.map(([label, icon]) => (
-          <button className={`nav-item ${activePage === label ? "active" : ""}`} type="button" aria-current={activePage === label ? "page" : undefined} key={label} onClick={() => onNavigate(label)}>
+          <button className={`nav-item ${activePage === label ? "active" : ""}`} type="button" aria-current={activePage === label ? "page" : undefined} key={label} onClick={() => navigate(label)}>
             <span className={`nav-icon ${icon}`} aria-hidden="true" />
             {t[label]}
           </button>
@@ -49,7 +52,7 @@ export function Sidebar({ activePage, onLogout, onNavigate, user, t }: SidebarPr
 
       <nav className="utility-nav" aria-label="Utility navigation">
         {utilityItems.map(([label, icon]) => (
-          <button className={`nav-item ${activePage === label ? "active" : ""}`} type="button" key={label} onClick={label === "logout" ? onLogout : () => onNavigate(label)}>
+          <button className={`nav-item ${activePage === label ? "active" : ""}`} type="button" key={label} onClick={label === "logout" ? onLogout : () => navigate(label)}>
             <span className={`nav-icon ${icon}`} aria-hidden="true" />
             {t[label]}
           </button>

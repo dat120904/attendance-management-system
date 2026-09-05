@@ -1,4 +1,4 @@
-﻿import { useState } from "react";
+import { useState } from "react";
 import type { AppNotification, AppPage, AttendanceSession, User } from "../types";
 import type { Language, Translation } from "../i18n";
 import { BellIcon, LoginIcon } from "./icons";
@@ -15,12 +15,13 @@ type TopbarProps = {
   onMarkAllNotificationsRead: () => void;
   onRetryNotificationEmail: (notificationId: string) => void;
   onOpenProfile: () => void;
+  onMenuClick: () => void;
   user: User;
   onLogout: () => void;
   t: Translation;
 };
 
-export function Topbar({ activePage, attendanceSession, isAttendanceBusy, language, notifications, onAttendanceAction, onLanguageChange, onMarkAllNotificationsRead, onMarkNotificationRead, onRetryNotificationEmail, onOpenProfile, user, onLogout, t }: TopbarProps) {
+export function Topbar({ activePage, attendanceSession, isAttendanceBusy, language, notifications, onAttendanceAction, onLanguageChange, onMarkAllNotificationsRead, onMarkNotificationRead, onRetryNotificationEmail, onOpenProfile, onMenuClick, user, onLogout, t }: TopbarProps) {
   const [isAccountOpen, setIsAccountOpen] = useState(false);
   const [isNotificationsOpen, setIsNotificationsOpen] = useState(false);
   const isWorking = attendanceSession.status === "working";
@@ -29,7 +30,7 @@ export function Topbar({ activePage, attendanceSession, isAttendanceBusy, langua
 
   return (
     <header className="topbar">
-      <button className="menu-button" type="button" aria-label={t.openMenu}>
+      <button className="menu-button" type="button" aria-label={t.openMenu} aria-controls="main-navigation" onClick={onMenuClick}>
         <span />
         <span />
         <span />
