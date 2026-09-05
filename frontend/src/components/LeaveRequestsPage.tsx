@@ -1,4 +1,4 @@
-﻿import { type FormEvent, useEffect, useMemo, useState } from "react";
+import { type FormEvent, useEffect, useMemo, useState } from "react";
 import {
   cancelLeaveRequest,
   createLeaveRequest,
@@ -7,6 +7,7 @@ import {
   fetchLeaveRequests,
   fetchLeaveWorkflow,
   submitLeaveRequest,
+  updateLeaveRequest,
   updateLeaveWorkflow
 } from "../api";
 import type { AttendanceLog, LeaveAttachment, LeaveRequest, LeaveType, LeaveWorkflowConfig, User } from "../types";
@@ -55,10 +56,16 @@ export function LeaveRequestsPage({
   const [isLoading, setIsLoading] = useState(false);
   const [refreshKey, setRefreshKey] = useState(0);
   const [draftWorkflow, setDraftWorkflow] = useState(workflowConfig);
+  const [isCreateOpen, setIsCreateOpen] = useState(false);
+  const [draftReason, setDraftReason] = useState("");
 
   useEffect(() => {
     setDraftWorkflow(workflowConfig);
   }, [workflowConfig]);
+
+  useEffect(() => {
+    setDraftReason(selectedRequest?.reason ?? "");
+  }, [selectedRequest?.id]);
 
   useEffect(() => {
     if (!authToken) {
@@ -182,6 +189,29 @@ export function LeaveRequestsPage({
     onRequestsChange(updateRequestList(requests, nextRequest));
     setSelectedRequest(nextRequest);
     setNotice(t.leaveSubmitted);
+  }
+
+  async function handleDraftReasonSave(request: LeaveRequest) {
+    if (!canSubmitDraft(user, request) || !draftReason.trim()) {
+      setNotice(!draftReason.trim() ? t.reasonRequired : t.noPermission);
+      return;
+    }
+
+    if (authToken) {
+      try {
+        const result = await updateLeaveRequest(authToken, request.id, { reason: draftReason.trim() });
+        syncRequestResult(result);
+        setNotice(t.reasonUpdated);
+      } catch (error) {
+        setNotice(error instanceof Error ? error.message : t.noPermission);
+      }
+      return;
+    }
+
+    const nextRequest = { ...request, reason: draftReason.trim() };
+    onRequestsChange(updateRequestList(requests, nextRequest));
+    setSelectedRequest(nextRequest);
+    setNotice(t.reasonUpdated);
   }
 
   async function handleDecision(request: LeaveRequest, decision: "approve" | "reject") {
@@ -330,10 +360,13 @@ export function LeaveRequestsPage({
           <h3>{t.leaveRequests}</h3>
           <p>{getScopeText(user, t)}</p>
         </div>
-        <div className="leave-balance-card">
-          <span>{t.remainingLeave}</span>
-          <strong>{user.remainingLeaveDays}</strong>
-          <small>{t.days}</small>
+        <div className="leave-heading-actions">
+          {user.role !== "Payroll" && <button className="primary-button" type="button" onClick={() => setIsCreateOpen(true)}>{t.createLeaveRequest}</button>}
+          <div className="leave-balance-card">
+            <span>{t.remainingLeave}</span>
+            <strong>{user.remainingLeaveDays}</strong>
+            <small>{t.days}</small>
+          </div>
         </div>
       </div>
 
@@ -343,42 +376,23 @@ export function LeaveRequestsPage({
 
       <div className="leave-layout">
         <div className="leave-side-panel">
-          {user.role !== "Payroll" && (
-            <form className="leave-form-panel" onSubmit={handleCreate}>
-              <h4>{t.createLeaveRequest}</h4>
-              <label>
-                {t.leaveType}
-                <select value={form.type} onChange={(event) => setForm((current) => ({ ...current, type: event.target.value as LeaveType }))}>
-                  {leaveTypes.map((type) => <option key={type} value={type}>{translateLeaveType(type, t)}</option>)}
-                </select>
-              </label>
-              <div className="two-column-fields">
-                <label>
-                  {t.startDate}
-                  <input type="date" value={form.startDate} onChange={(event) => setForm((current) => ({ ...current, startDate: event.target.value }))} />
-                </label>
-                <label>
-                  {t.endDate}
-                  <input type="date" value={form.endDate} onChange={(event) => setForm((current) => ({ ...current, endDate: event.target.value }))} />
-                </label>
+          {user.role !== "Payroll" && isCreateOpen && (
+            <div className="modal-backdrop leave-create-backdrop" role="dialog" aria-modal="true" aria-label={t.createLeaveRequest}>
+              <div className="leave-create-modal">
+                <div className="modal-header">
+                  <div><h2>{t.createLeaveRequest}</h2><p>{getScopeText(user, t)}</p></div>
+                  <button className="modal-close" type="button" aria-label={t.close} onClick={() => setIsCreateOpen(false)}>x</button>
+                </div>
+                <form className="leave-form-panel modal-form" onSubmit={handleCreate}>
+                  <label>{t.leaveType}<select value={form.type} onChange={(event) => setForm((current) => ({ ...current, type: event.target.value as LeaveType }))}>{leaveTypes.map((type) => <option key={type} value={type}>{translateLeaveType(type, t)}</option>)}</select></label>
+                  <div className="two-column-fields"><label>{t.startDate}<input type="date" value={form.startDate} onChange={(event) => setForm((current) => ({ ...current, startDate: event.target.value }))} /></label><label>{t.endDate}<input type="date" value={form.endDate} onChange={(event) => setForm((current) => ({ ...current, endDate: event.target.value }))} /></label></div>
+                  <div className="leave-balance-preview"><span>{t.requestedDays}: {requestedDays}</span><span>{t.balanceAfter}: {Math.max(0, remainingLeaveAfterRequest)} {t.days}</span></div>
+                  <label>{t.reason}<textarea value={form.reason} onChange={(event) => setForm((current) => ({ ...current, reason: event.target.value }))} placeholder={t.reasonPlaceholder} /></label>
+                  <label>{t.attachment}<input type="file" onChange={(event) => void handleAttachmentChange(event.target.files?.[0])} /></label>
+                  <div className="leave-form-actions"><button className="secondary-button" type="button" onClick={() => void saveRequest("draft")}>{t.saveDraft}</button><button className="primary-button" type="submit">{t.submitLeaveRequest}</button></div>
+                </form>
               </div>
-              <div className="leave-balance-preview">
-                <span>{t.requestedDays}: {requestedDays}</span>
-                <span>{t.balanceAfter}: {Math.max(0, remainingLeaveAfterRequest)} {t.days}</span>
-              </div>
-              <label>
-                {t.reason}
-                <textarea value={form.reason} onChange={(event) => setForm((current) => ({ ...current, reason: event.target.value }))} placeholder={t.reasonPlaceholder} />
-              </label>
-              <label>
-                {t.attachment}
-                <input type="file" onChange={(event) => void handleAttachmentChange(event.target.files?.[0])} />
-              </label>
-              <div className="leave-form-actions">
-                <button className="secondary-button" type="button" onClick={() => void saveRequest("draft")}>{t.saveDraft}</button>
-                <button className="primary-button" type="submit">{t.submitLeaveRequest}</button>
-              </div>
-            </form>
+            </div>
           )}
 
           {user.role === "Admin" && (
@@ -415,25 +429,31 @@ export function LeaveRequestsPage({
               <thead>
                 <tr>
                   <th>{t.employee}</th>
+                  <th>{t.department}</th>
                   <th>{t.leaveType}</th>
                   <th>{t.dateRange}</th>
                   <th>{t.days}</th>
                   <th>{t.status}</th>
+                  <th>{t.reason}</th>
+                  <th>{t.attachment}</th>
                 </tr>
               </thead>
               <tbody>
                 {scopedRequests.map((request) => (
                   <tr className={selectedRequest?.id === request.id ? "selected-row" : ""} key={request.id} onClick={() => setSelectedRequest(request)}>
                     <td data-label={t.employee}>{request.employeeName}</td>
+                    <td data-label={t.department}>{request.department}</td>
                     <td data-label={t.leaveType}>{translateLeaveType(request.type, t)}</td>
                     <td data-label={t.dateRange}>{request.startDate} - {request.endDate}</td>
                     <td data-label={t.days}>{request.days}</td>
                     <td data-label={t.status}><span className={`badge ${leaveStatusClassName(request.status)}`}>{translateLeaveStatus(request.status, t)}</span></td>
+                    <td data-label={t.reason}>{request.reason || t.none}</td>
+                    <td data-label={t.attachment}>{request.attachmentName || t.none}</td>
                   </tr>
                 ))}
                 {scopedRequests.length === 0 && (
                   <tr>
-                    <td colSpan={5}>{t.noLeaveRequests}</td>
+                    <td colSpan={8}>{t.noLeaveRequests}</td>
                   </tr>
                 )}
               </tbody>
@@ -460,6 +480,12 @@ export function LeaveRequestsPage({
                 )}
                 <div><dt>{t.reason}</dt><dd>{selectedRequest.reason || t.none}</dd></div>
               </dl>
+              {canSubmitDraft(user, selectedRequest) && (
+                <div className="draft-reason-editor">
+                  <label>{t.editDraftReason}<textarea value={draftReason} onChange={(event) => setDraftReason(event.target.value)} /></label>
+                  <button type="button" onClick={() => void handleDraftReasonSave(selectedRequest)}>{t.saveReason}</button>
+                </div>
+              )}
               <div className="detail-actions">
                 {canSubmitDraft(user, selectedRequest) && <button type="button" onClick={() => void handleSubmitDraft(selectedRequest)}>{t.submitDraft}</button>}
                 {canCancel(user, selectedRequest, workflowConfig) && <button type="button" onClick={() => void handleCancel(selectedRequest)}>{t.cancelRequest}</button>}
