@@ -1591,6 +1591,12 @@ td {
   padding: 40px;
 }
 
+.leave-heading-actions {
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+}
+
 .leave-balance-card {
   display: grid;
   min-width: 150px;
@@ -1617,18 +1623,19 @@ td {
 
 .leave-layout {
   display: grid;
-  grid-template-columns: 360px minmax(0, 1fr) 320px;
+  grid-template-columns: minmax(0, 1fr) 320px;
   gap: 24px;
 }
 
 .leave-side-panel {
-  display: grid;
+  display: contents;
   gap: 18px;
   align-content: start;
 }
 
 .leave-form-panel,
 .leave-list-panel {
+  grid-column: 1;
   display: grid;
   align-content: start;
   gap: 18px;
@@ -1637,6 +1644,55 @@ td {
   border: 1px solid var(--line);
   border-radius: 8px;
   box-shadow: var(--shadow);
+}
+
+.leave-create-modal {
+  width: min(100%, 620px);
+  max-height: min(92vh, 760px);
+  overflow: auto;
+  background: #fff;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  box-shadow: 0 24px 70px rgba(15, 23, 42, 0.28);
+}
+
+.leave-create-backdrop {
+  align-items: flex-start;
+  overflow-y: auto;
+  padding: clamp(20px, 7vh, 64px) 16px 24px;
+}
+
+.leave-create-modal .modal-header {
+  padding: 24px 24px 14px;
+}
+
+.leave-create-modal .modal-header h2 {
+  color: #111827;
+  font-size: 26px;
+  line-height: 1.2;
+}
+
+.leave-create-modal .modal-header p {
+  margin-top: 6px;
+  font-size: 14px;
+}
+
+.leave-create-modal .modal-close {
+  flex: 0 0 auto;
+  color: #475569;
+  background: #f8fafc;
+  font-size: 20px;
+}
+
+.leave-create-modal .modal-close:hover {
+  color: #111827;
+  background: #e8eefc;
+}
+
+.leave-create-modal .leave-form-panel {
+  padding: 0 24px 24px;
+  border: 0;
+  box-shadow: none;
 }
 
 .leave-form-panel h4 {
@@ -1683,7 +1739,8 @@ td {
   gap: 10px;
 }
 
-.workflow-panel {
+.leave-layout .workflow-panel {
+  grid-column: 1 / -1;
   border-color: #c8d5ff;
 }
 
@@ -1714,6 +1771,7 @@ td {
 }
 
 .leave-detail-card {
+  grid-column: 2;
   align-self: start;
 }
 
@@ -2042,6 +2100,16 @@ td {
 
   .payroll-warning-list {
     justify-content: flex-start;
+  }
+
+  .leave-heading-actions {
+    align-items: stretch;
+    flex-direction: column-reverse;
+  }
+
+  .leave-list-panel,
+  .leave-detail-card {
+    grid-column: 1;
   }
 
   .leave-page {
@@ -2582,4 +2650,18 @@ td {
   .help-layout {
     grid-template-columns: 1fr;
   }
+}
+
+
+.leave-create-modal .leave-form-panel label {
+  gap: 9px;
+}
+
+.leave-create-modal .leave-form-actions {
+  margin-top: 4px;
+}
+
+.leave-create-modal .leave-form-actions button {
+  min-height: 46px;
+  font-size: 15px;
 }
