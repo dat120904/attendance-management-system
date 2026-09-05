@@ -24,6 +24,7 @@ export default function App() {
   const [authToken, setAuthToken] = useState<string | null>(null);
   const [language, setLanguage] = useState<Language>("en");
   const [activePage, setActivePage] = useState<AppPage>("dashboard");
+  const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const [attendanceSession, setAttendanceSession] = useState<AttendanceSession>({
     status: "not-started",
     checkInAt: null,
@@ -296,7 +297,8 @@ export default function App() {
 
   return (
     <div className="app-shell">
-      <Sidebar activePage={activePage} onLogout={handleLogout} onNavigate={setActivePage} user={user} t={t} />
+      <Sidebar activePage={activePage} onLogout={handleLogout} onNavigate={setActivePage} user={user} t={t} isOpen={isMobileMenuOpen} onClose={() => setIsMobileMenuOpen(false)} />
+      {isMobileMenuOpen && <button className="sidebar-backdrop" type="button" aria-label={t.close} onClick={() => setIsMobileMenuOpen(false)} />}
       <main className="workspace">
         <Topbar
           activePage={activePage}
@@ -311,6 +313,7 @@ export default function App() {
           onMarkNotificationRead={(notificationId) => void handleMarkNotificationRead(notificationId)}
           onRetryNotificationEmail={(notificationId) => void handleRetryNotificationEmail(notificationId)}
           onOpenProfile={() => setActivePage("profile")}
+          onMenuClick={() => setIsMobileMenuOpen((current) => !current)}
           t={t}
           user={user}
         />
