@@ -2,9 +2,9 @@ import { useEffect, useMemo, useState } from "react";
 import { dashboardData } from "../data/mockData";
 import type { Translation } from "../i18n";
 import { translateRole } from "../utils/localize";
-import type { AttendanceLog, AttendanceSession, DashboardMetric, User } from "../types";
-import { addDays, formatClockTime, formatDuration, formatHolidayRange, formatSummaryDate } from "../utils/time";
-import { ClockIcon, HolidayIcon, LeaveIcon, LoginIcon, LogoutIcon, WarningIcon } from "./icons";
+import type { AppPage, AttendanceLog, AttendanceSession, DashboardMetric, User } from "../types";
+import { formatClockTime, formatDuration, formatSummaryDate } from "../utils/time";
+import { ClockIcon, LeaveIcon, LoginIcon, LogoutIcon, WarningIcon } from "./icons";
 
 type DashboardProps = {
   attendanceError: string;
@@ -16,6 +16,7 @@ type DashboardProps = {
   onCheckOut: () => void;
   user: User;
   t: Translation;
+  onNavigate: (page: AppPage) => void;
 };
 
 export function Dashboard({
@@ -27,15 +28,13 @@ export function Dashboard({
   onCheckIn,
   onCheckOut,
   user,
-  t
+  t,
+  onNavigate
 }: DashboardProps) {
   const [seconds, setSeconds] = useState(attendanceSession.elapsedSeconds);
   const locale = t.language === "Ngôn ngữ" ? "vi-VN" : "en-US";
   const today = useMemo(() => new Date(), []);
-  const holidayStartDate = useMemo(() => new Date(dashboardData.nextHoliday.dateRange), []);
-  const holidayEndDate = useMemo(() => addDays(holidayStartDate, 1), [holidayStartDate]);
   const summaryDate = formatSummaryDate(today, locale);
-  const holidayDateRange = formatHolidayRange(holidayStartDate, holidayEndDate, locale);
   const greeting = getGreeting(today, t);
 
   useEffect(() => {
@@ -51,23 +50,10 @@ export function Dashboard({
   const metrics = useMemo<DashboardMetric[]>(() => {
     const base: DashboardMetric[] = [
       {
-        label: t.hoursThisWeek,
-        value: `${dashboardData.weeklyHours}`,
-        suffix: `/ ${dashboardData.weeklyTarget}h`,
-        progress: Math.round((dashboardData.weeklyHours / dashboardData.weeklyTarget) * 100),
-        icon: "clock"
-      },
-      {
         label: t.remainingLeave,
         value: `${user.remainingLeaveDays}`,
         suffix: t.days,
         icon: "leave"
-      },
-      {
-        label: t.nextHoliday,
-        value: t.thanksgiving,
-        helper: t.holidayDate.replace("{date}", holidayDateRange),
-        icon: "holiday"
       }
     ];
 
@@ -91,7 +77,7 @@ export function Dashboard({
     }
 
     return base;
-  }, [holidayDateRange, t, user]);
+  }, [t, user]);
 
   const roleOverview = getRoleOverview(user.role, t);
   const actionCards = getActionCards(user.role, t);
@@ -166,7 +152,7 @@ export function Dashboard({
         </aside>
       </section>
 
-      <section className="dashboard-panels" aria-label={t.roleOverview}>
+      <section className={`dashboard-panels dashboard-panels-${user.role.toLowerCase()}`} aria-label={t.roleOverview}>
         <article className="overview-card">
           <div>
             <span>{t.roleOverview}</span>
@@ -186,7 +172,7 @@ export function Dashboard({
               <p>
                 <strong>{card.value}</strong> {card.suffix}
               </p>
-              <a href="#">{t.reviewNow}</a>
+              <button className="action-link" type="button" onClick={() => onNavigate(getActionPage(card.label, t))}>{t.reviewNow}</button>
             </article>
           ))}
         </div>
@@ -229,11 +215,17 @@ export function Dashboard({
   );
 }
 
+function getActionPage(label: string, t: Translation): AppPage {
+  if (label === t.upcomingLeave || label === t.pendingLeaveRequests) return "leaveRequests";
+  if (label === t.payrollReadiness) return "payrollSummaries";
+  return "attendanceLogs";
+}
+
 function MetricIcon({ icon }: { icon: DashboardMetric["icon"] }) {
   if (icon === "clock") return <ClockIcon />;
   if (icon === "leave") return <LeaveIcon />;
   if (icon === "warning") return <WarningIcon />;
-  return <HolidayIcon />;
+  return <LeaveIcon />;
 }
 
 function statusClassName(status: string) {

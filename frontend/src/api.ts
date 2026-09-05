@@ -166,6 +166,14 @@ export async function createLeaveRequest(token: string, form: { type: LeaveType;
   return response.json() as Promise<LeaveRequestResponse>;
 }
 
+export async function updateLeaveRequest(token: string, requestId: string, update: { reason: string }) {
+  return request<LeaveRequestResponse>(`/api/leave-requests/${requestId}`, {
+    method: "PUT",
+    token,
+    body: JSON.stringify(update)
+  });
+}
+
 export async function decideLeaveRequest(token: string, requestId: string, decision: "approve" | "reject") {
   return request<LeaveRequestResponse>(`/api/leave-requests/${requestId}/${decision}`, {
     method: "POST",

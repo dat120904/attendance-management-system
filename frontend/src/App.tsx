@@ -12,7 +12,7 @@ import { Sidebar } from "./components/Sidebar";
 import { Topbar } from "./components/Topbar";
 import { fetchNotifications, markAllNotificationsRead, markNotificationRead, retryNotificationEmail, loginWithPassword, registerAccount } from "./api";
 import { dashboardData, demoUsers, helpArticles as initialHelpArticles, leaveRequests as initialLeaveRequests, leaveWorkflowConfig as initialLeaveWorkflowConfig, notifications as initialNotifications, payrollPeriods as initialPayrollPeriods, supportTickets as initialSupportTickets, systemSettings as initialSystemSettings } from "./data/mockData";
-import type { Language } from "./i18n";
+import type { Language, Translation } from "./i18n";
 import { translations } from "./i18n";
 import type { AppPage, AppNotification, AttendanceLog, AttendanceSession, HelpArticle, LeaveRequest, LeaveWorkflowConfig, PayrollPeriod, SupportTicket, SystemSettings, User } from "./types";
 import { formatClockTime, formatLogDate, formatTotalHours } from "./utils/time";
@@ -122,6 +122,12 @@ export default function App() {
   }
 
   function startSessionForUser(nextUser: User) {
+    const scheduleError = getCheckInRestriction(new Date(), nextUser, systemSettings, t);
+    if (scheduleError) {
+      setAttendanceError(scheduleError);
+      setAttendanceMessage("");
+      return;
+    }
     const now = new Date();
     setAuthToken(null);
     setUser(nextUser);
@@ -169,6 +175,12 @@ export default function App() {
   function handleCheckIn() {
     if (attendanceSession.status === "working") {
       setAttendanceError(t.duplicateCheckIn);
+      return;
+    }
+
+    const scheduleError = getCheckInRestriction(new Date(), user, systemSettings, t);
+    if (scheduleError) {
+      setAttendanceError(scheduleError);
       return;
     }
 
@@ -328,6 +340,7 @@ export default function App() {
             onCheckOut={handleCheckOut}
             t={t}
             user={user}
+            onNavigate={setActivePage}
           />
         )}
         {activePage === "attendanceLogs" && <AttendanceLogsPage authToken={authToken} logs={logs} onLogsChange={setLogs} t={t} user={user} />}
@@ -395,4 +408,24 @@ function slugify(value: string) {
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, ".")
     .replace(/(^\.|\.$)/g, "");
+}
+
+
+function getCheckInRestriction(now: Date, currentUser: User | null, settings: SystemSettings, t: Translation) {
+  if (!currentUser) return "";
+  const isoDate = now.toISOString().slice(0, 10);
+  if (settings.holidays.some((holiday) => isoDate >= holiday.startDate && isoDate <= holiday.endDate)) return t.checkInHoliday;
+  const schedule = settings.workSchedules.find((item) => item.name === currentUser.schedulePolicy) ?? settings.workSchedules[0];
+  if (!schedule || !schedule.workDays.includes(now.getDay())) return t.checkInDayOff;
+  const currentMinutes = now.getHours() * 60 + now.getMinutes();
+  const startMinutes = toMinutes(schedule.startTime);
+  const endMinutes = toMinutes(schedule.endTime);
+  if (currentMinutes < startMinutes) return t.checkInTooEarly.replace("{time}", schedule.startTime);
+  if (currentMinutes > endMinutes) return t.checkInClosed.replace("{time}", schedule.endTime);
+  return "";
+}
+
+function toMinutes(value: string) {
+  const [hours, minutes] = value.split(":").map(Number);
+  return hours * 60 + minutes;
 }

@@ -605,9 +605,10 @@ button {
 .hero-card {
   display: flex;
   flex-direction: column;
-  justify-content: space-between;
-  min-height: 508px;
-  padding: 33px 30px 30px;
+  justify-content: flex-start;
+  gap: 28px;
+  min-height: 0;
+  padding: 30px;
 }
 
 .hero-card h3 {
@@ -1120,7 +1121,8 @@ button {
   font-size: 30px;
 }
 
-.action-card a {
+.action-card a,
+.action-link {
   color: #0034c7;
   font-size: 14px;
   font-weight: 700;
@@ -2156,6 +2158,7 @@ td {
     flex-direction: column;
   }
 
+  .dashboard-panels-manager .action-grid,
   .action-grid {
     grid-template-columns: 1fr;
   }
@@ -2664,4 +2667,62 @@ td {
 .leave-create-modal .leave-form-actions button {
   min-height: 46px;
   font-size: 15px;
+}
+
+@media (min-width: 821px) {
+  .dashboard-panels-manager {
+    grid-template-columns: minmax(300px, 1.1fr) repeat(3, minmax(180px, 1fr));
+    align-items: stretch;
+  }
+  .dashboard-panels-manager .action-grid {
+    display: contents;
+  }
+  .dashboard-panels-manager .action-card {
+    min-width: 0;
+  }
+}
+
+.action-link {
+  appearance: none;
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: #0034c7;
+  cursor: pointer;
+  font: inherit;
+  font-weight: 700;
+}
+.draft-reason-editor {
+  display: grid;
+  gap: 10px;
+  margin: -6px 0 18px;
+  padding: 14px;
+  background: #f7f9fc;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+}
+
+.draft-reason-editor label {
+  display: grid;
+  gap: 7px;
+  color: #53627a;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.draft-reason-editor textarea {
+  min-height: 82px;
+  resize: vertical;
+}
+
+.draft-reason-editor button {
+  justify-self: start;
+  min-height: 36px;
+  padding: 0 14px;
+  color: #fff;
+  background: var(--primary);
+  border: 1px solid var(--primary);
+  border-radius: 5px;
+  font-weight: 700;
+  cursor: pointer;
 }

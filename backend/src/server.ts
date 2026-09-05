@@ -134,6 +134,12 @@ const server = createServer(async (request, response) => {
       const user = requireUser(request, response);
       if (!user) return;
 
+      const scheduleError = getCheckInRestriction(new Date(), user);
+      if (scheduleError) {
+        sendJson(response, 409, { error: scheduleError });
+        return;
+      }
+
       const currentSession = activeAttendanceSessions.get(user.id);
       if (currentSession) {
         sendJson(response, 409, { error: "Active attendance session already exists", session: currentSession });
@@ -465,6 +471,30 @@ const server = createServer(async (request, response) => {
       leaveRequests.unshift(requestItem);
       addAudit(user.id, requestItem.status === "Draft" ? "leave.request.draft_saved" : "leave.request.created", requestItem.id);
       sendJson(response, 201, { request: requestItem });
+      return;
+    }
+
+    if (request.method === "PUT" && request.url?.match(/^\/api\/leave-requests\/[^/]+$/)) {
+      const user = requireUser(request, response);
+      if (!user) return;
+
+      const requestId = request.url.split("/")[3];
+      const requestItem = leaveRequests.find((item) => item.id === requestId);
+      if (!requestItem || requestItem.employeeId !== user.id || requestItem.status !== "Draft") {
+        sendJson(response, 403, { error: "Only the owner can edit a draft leave request" });
+        return;
+      }
+
+      const body = await readJsonBody<{ reason?: string }>(request);
+      const reason = body.reason?.trim() ?? "";
+      if (!reason) {
+        sendJson(response, 400, { error: "Leave request reason is required" });
+        return;
+      }
+
+      requestItem.reason = reason;
+      addAudit(user.id, "leave.request.draft_updated", requestItem.id);
+      sendJson(response, 200, { request: requestItem });
       return;
     }
 
@@ -1778,3 +1808,22 @@ function readJsonBody<T>(request: IncomingMessage): Promise<T> {
   });
 }
 
+
+
+function getCheckInRestriction(now: Date, user: { schedulePolicy?: string }) {
+  const isoDate = now.toISOString().slice(0, 10);
+  if (systemSettings.holidays.some((holiday) => isoDate >= holiday.startDate && isoDate <= holiday.endDate)) return "Check-in is unavailable on a holiday";
+  const schedule = systemSettings.workSchedules.find((item) => item.name === user.schedulePolicy) ?? systemSettings.workSchedules[0];
+  if (!schedule || !schedule.workDays.includes(now.getDay())) return "Today is not a scheduled workday";
+  const currentMinutes = now.getHours() * 60 + now.getMinutes();
+  const startMinutes = toMinutes(schedule.startTime);
+  const endMinutes = toMinutes(schedule.endTime);
+  if (currentMinutes < startMinutes) return `Check-in opens at ${schedule.startTime}`;
+  if (currentMinutes > endMinutes) return `Check-in is closed after ${schedule.endTime}`;
+  return "";
+}
+
+function toMinutes(value: string) {
+  const [hours, minutes] = value.split(":").map(Number);
+  return hours * 60 + minutes;
+}

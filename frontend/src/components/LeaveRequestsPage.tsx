@@ -7,6 +7,7 @@ import {
   fetchLeaveRequests,
   fetchLeaveWorkflow,
   submitLeaveRequest,
+  updateLeaveRequest,
   updateLeaveWorkflow
 } from "../api";
 import type { AttendanceLog, LeaveAttachment, LeaveRequest, LeaveType, LeaveWorkflowConfig, User } from "../types";
@@ -56,10 +57,15 @@ export function LeaveRequestsPage({
   const [refreshKey, setRefreshKey] = useState(0);
   const [draftWorkflow, setDraftWorkflow] = useState(workflowConfig);
   const [isCreateOpen, setIsCreateOpen] = useState(false);
+  const [draftReason, setDraftReason] = useState("");
 
   useEffect(() => {
     setDraftWorkflow(workflowConfig);
   }, [workflowConfig]);
+
+  useEffect(() => {
+    setDraftReason(selectedRequest?.reason ?? "");
+  }, [selectedRequest?.id]);
 
   useEffect(() => {
     if (!authToken) {
@@ -183,6 +189,29 @@ export function LeaveRequestsPage({
     onRequestsChange(updateRequestList(requests, nextRequest));
     setSelectedRequest(nextRequest);
     setNotice(t.leaveSubmitted);
+  }
+
+  async function handleDraftReasonSave(request: LeaveRequest) {
+    if (!canSubmitDraft(user, request) || !draftReason.trim()) {
+      setNotice(!draftReason.trim() ? t.reasonRequired : t.noPermission);
+      return;
+    }
+
+    if (authToken) {
+      try {
+        const result = await updateLeaveRequest(authToken, request.id, { reason: draftReason.trim() });
+        syncRequestResult(result);
+        setNotice(t.reasonUpdated);
+      } catch (error) {
+        setNotice(error instanceof Error ? error.message : t.noPermission);
+      }
+      return;
+    }
+
+    const nextRequest = { ...request, reason: draftReason.trim() };
+    onRequestsChange(updateRequestList(requests, nextRequest));
+    setSelectedRequest(nextRequest);
+    setNotice(t.reasonUpdated);
   }
 
   async function handleDecision(request: LeaveRequest, decision: "approve" | "reject") {
@@ -451,6 +480,12 @@ export function LeaveRequestsPage({
                 )}
                 <div><dt>{t.reason}</dt><dd>{selectedRequest.reason || t.none}</dd></div>
               </dl>
+              {canSubmitDraft(user, selectedRequest) && (
+                <div className="draft-reason-editor">
+                  <label>{t.editDraftReason}<textarea value={draftReason} onChange={(event) => setDraftReason(event.target.value)} /></label>
+                  <button type="button" onClick={() => void handleDraftReasonSave(selectedRequest)}>{t.saveReason}</button>
+                </div>
+              )}
               <div className="detail-actions">
                 {canSubmitDraft(user, selectedRequest) && <button type="button" onClick={() => void handleSubmitDraft(selectedRequest)}>{t.submitDraft}</button>}
                 {canCancel(user, selectedRequest, workflowConfig) && <button type="button" onClick={() => void handleCancel(selectedRequest)}>{t.cancelRequest}</button>}
