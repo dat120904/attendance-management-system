@@ -1,10 +1,11 @@
-﻿import { createReadStream, existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { createReadStream, existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { createServer, IncomingMessage, ServerResponse } from "node:http";
 import { join, resolve } from "node:path";
 import { activeAttendanceSessions, attendanceLogs, auditLogs, helpArticles, leaveRequests, leaveWorkflowConfig, notifications, payrollPeriods, supportTickets, systemSettings, users } from "./data.js";
 import type { AttendanceLog, AppNotification, HelpArticle, LeaveAttachment, LeaveRequest, LeaveType, LeaveWorkflowConfig, PayrollPeriod, PayrollSummaryRow, SystemSettings, User } from "./types.js";
 import { getUserByToken, login, logout, publicUser, registerAccount, setUserPassword } from "./auth.js";
 import type { UserRole } from "./types.js";
+import { openApiSpec, renderApiDocs } from "./apiDocs.js";
 
 const port = Number(process.env.PORT ?? 4000);
 const allowedOrigins = (process.env.ALLOWED_ORIGINS ?? process.env.FRONTEND_URL ?? "http://localhost:5173")
@@ -24,6 +25,17 @@ const server = createServer(async (request, response) => {
   }
 
   try {
+    if (request.method === "GET" && request.url === "/api/docs") {
+      response.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+      response.end(renderApiDocs());
+      return;
+    }
+
+    if (request.method === "GET" && request.url === "/api/openapi.json") {
+      sendJson(response, 200, openApiSpec);
+      return;
+    }
+
     if (request.method === "GET" && request.url === "/api/health") {
       sendJson(response, 200, { ok: true, service: "workforce-pro-api" });
       return;
