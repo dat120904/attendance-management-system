@@ -1,4 +1,4 @@
-﻿import { FormEvent, useEffect, useMemo, useState } from "react";
+import { FormEvent, useEffect, useMemo, useState } from "react";
 import { createEmployee, downloadEmployeeExport, fetchEmployees, importEmployees, setEmployeeLocked, updateEmployee } from "../api";
 import type { AttendanceLog, User, UserRole } from "../types";
 import type { Translation } from "../i18n";
@@ -29,7 +29,6 @@ type EmployeeForm = {
   managerId: string;
   hireDate: string;
   employmentStatus: NonNullable<User["employmentStatus"]>;
-  schedulePolicy: string;
   attendancePolicy: string;
   leavePolicy: string;
   remainingLeaveDays: number;
@@ -244,7 +243,6 @@ export function EmployeeManagementPage({ authToken, logs, onUsersChange, t, user
                 <label>{t.directManager}<select value={form.managerId} onChange={(event) => setFormField("managerId", event.target.value)}><option value="">-</option>{managers.map((manager) => <option value={manager.id} key={manager.id}>{manager.name}</option>)}</select></label>
                 <label>{t.hireDate}<input type="date" value={form.hireDate} onChange={(event) => setFormField("hireDate", event.target.value)} /></label>
                 <label>{t.employmentStatus}<select value={form.employmentStatus} onChange={(event) => setFormField("employmentStatus", event.target.value as EmployeeForm["employmentStatus"])}>{statusOptions.map((status) => <option value={status} key={status}>{translateStatusOption(status, t)}</option>)}</select></label>
-                <label>{t.schedulePolicy}<input value={form.schedulePolicy} onChange={(event) => setFormField("schedulePolicy", event.target.value)} /></label>
                 <label>{t.attendancePolicy}<input value={form.attendancePolicy} onChange={(event) => setFormField("attendancePolicy", event.target.value)} /></label>
                 <label>{t.leavePolicy}<input value={form.leavePolicy} onChange={(event) => setFormField("leavePolicy", event.target.value)} /></label>
                 <label>{t.remainingLeave}<input type="number" min="0" value={form.remainingLeaveDays} onChange={(event) => setFormField("remainingLeaveDays", Number(event.target.value))} /></label>
@@ -296,7 +294,6 @@ function ReadonlyProfile({ employee, managers, t, canSeeSensitive }: { employee:
       <div><dt>{t.department}</dt><dd>{translateDepartment(employee.subtitle, t)}</dd></div>
       <div><dt>{t.position}</dt><dd>{employee.position}</dd></div>
       <div><dt>{t.directManager}</dt><dd>{managerName}</dd></div>
-      <div><dt>{t.schedulePolicy}</dt><dd>{employee.schedulePolicy}</dd></div>
       <div><dt>{t.attendancePolicy}</dt><dd>{employee.attendancePolicy}</dd></div>
       <div><dt>{t.leavePolicy}</dt><dd>{employee.leavePolicy}</dd></div>
     </dl>
@@ -316,7 +313,6 @@ function toForm(employee: User | undefined, currentUser: User): EmployeeForm {
     managerId: employee?.managerId ?? (currentUser.role === "Manager" ? currentUser.id : "u-manager"),
     hireDate: employee?.hireDate ?? new Date().toISOString().slice(0, 10),
     employmentStatus: employee?.employmentStatus ?? (employee?.locked ? "Locked" : "Active"),
-    schedulePolicy: employee?.schedulePolicy ?? "Standard 8h",
     attendancePolicy: employee?.attendancePolicy ?? "Office check-in",
     leavePolicy: employee?.leavePolicy ?? "Annual 12 days",
     remainingLeaveDays: employee?.remainingLeaveDays ?? 12
@@ -336,7 +332,6 @@ function fromForm(form: EmployeeForm): User {
     managerId: form.managerId,
     hireDate: form.hireDate,
     employmentStatus: form.employmentStatus,
-    schedulePolicy: form.schedulePolicy.trim(),
     attendancePolicy: form.attendancePolicy.trim(),
     leavePolicy: form.leavePolicy.trim(),
     remainingLeaveDays: Number(form.remainingLeaveDays) || 0,
@@ -378,7 +373,6 @@ function parseImportRows(rows: string, existingUsers: User[], t: Translation) {
       managerId: "u-manager",
       hireDate: new Date().toISOString().slice(0, 10),
       employmentStatus: "Active" as const,
-      schedulePolicy: "Standard 8h",
       attendancePolicy: "Office check-in",
       leavePolicy: "Annual 12 days",
       remainingLeaveDays: 12,

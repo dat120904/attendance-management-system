@@ -12,7 +12,6 @@ export type User = {
   managerId?: string;
   hireDate?: string;
   employmentStatus?: "Active" | "Locked" | "Inactive";
-  schedulePolicy?: string;
   attendancePolicy?: string;
   leavePolicy?: string;
   remainingLeaveDays: number;
@@ -79,8 +78,9 @@ export type HolidaySetting = {
 
 export type WorkScheduleSetting = {
   id: string;
-  name: string;
   startTime: string;
+  morningEndTime: string;
+  afternoonStartTime: string;
   endTime: string;
   breakMinutes: number;
   workDays: number[];

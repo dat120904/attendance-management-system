@@ -1,4 +1,4 @@
-﻿import { FormEvent, useEffect, useMemo, useState } from "react";
+import { FormEvent, useEffect, useMemo, useState } from "react";
 import { fetchSettings, updateSettings } from "../api";
 import type { HolidaySetting, SystemSettings, User, UserRole, WorkScheduleSetting } from "../types";
 import type { Translation } from "../i18n";
@@ -13,7 +13,8 @@ type SettingsPageProps = {
 };
 
 const roleOptions: UserRole[] = ["Employee", "Manager", "HR", "Payroll", "Admin"];
-const tabKeys = ["attendance", "leave", "schedules", "holidays", "roles", "notifications", "payroll", "security", "integrations", "audit"] as const;
+const workDayOptions = [{ value: 1, label: "monday" }, { value: 2, label: "tuesday" }, { value: 3, label: "wednesday" }, { value: 4, label: "thursday" }, { value: 5, label: "friday" }] as const;
+const tabKeys = ["attendance", "leave", "schedules", "holidays", "roles", "notifications", "payroll", "integrations", "audit"] as const;
 type SettingsTab = (typeof tabKeys)[number];
 
 type SectionProps = {
@@ -24,7 +25,7 @@ type SectionProps = {
 };
 
 export function SettingsPage({ authToken, settings, onSettingsChange, t, user }: SettingsPageProps) {
-  const [draft, setDraft] = useState<SystemSettings>(settings);
+  const [draft, setDraft] = useState<SystemSettings>(() => normalizeScheduleData(settings));
   const [activeTab, setActiveTab] = useState<SettingsTab>(firstAllowedTab(user.role));
   const [notice, setNotice] = useState("");
   const [error, setError] = useState("");
@@ -32,7 +33,7 @@ export function SettingsPage({ authToken, settings, onSettingsChange, t, user }:
   const visibleTabs = useMemo(() => tabKeys.filter((tab) => canViewTab(user.role, tab)), [user.role]);
 
   useEffect(() => {
-    setDraft(settings);
+    setDraft(normalizeScheduleData(settings));
   }, [settings]);
 
   useEffect(() => {
@@ -47,8 +48,9 @@ export function SettingsPage({ authToken, settings, onSettingsChange, t, user }:
     fetchSettings(authToken)
       .then(({ settings }) => {
         if (!active) return;
-        setDraft(settings);
-        onSettingsChange(settings);
+        const normalizedSettings = normalizeScheduleData(settings);
+        setDraft(normalizedSettings);
+        onSettingsChange(normalizedSettings);
         setError("");
       })
       .catch((err) => {
@@ -87,10 +89,6 @@ export function SettingsPage({ authToken, settings, onSettingsChange, t, user }:
     }
   }
 
-  function addSchedule() {
-    const schedule: WorkScheduleSetting = { id: `schedule-${Date.now()}`, name: "Standard", startTime: draft.attendancePolicy.standardStartTime, endTime: draft.attendancePolicy.standardEndTime, breakMinutes: 60, workDays: [1, 2, 3, 4, 5] };
-    setDraft((current) => ({ ...current, workSchedules: [...current.workSchedules, schedule] }));
-  }
 
   function addHoliday() {
     const today = new Date().toISOString().slice(0, 10);
@@ -130,12 +128,11 @@ export function SettingsPage({ authToken, settings, onSettingsChange, t, user }:
 
           {activeTab === "attendance" && <AttendancePolicySection draft={draft} setDraft={setDraft} t={t} disabled={!editable} />}
           {activeTab === "leave" && <LeavePolicySection draft={draft} setDraft={setDraft} t={t} disabled={!editable} />}
-          {activeTab === "schedules" && <SchedulesSection draft={draft} setDraft={setDraft} t={t} disabled={!editable} onAdd={addSchedule} />}
+          {activeTab === "schedules" && <SchedulesSection draft={draft} setDraft={setDraft} t={t} disabled={!editable} />}
           {activeTab === "holidays" && <HolidaysSection draft={draft} setDraft={setDraft} t={t} disabled={!editable} onAdd={addHoliday} />}
           {activeTab === "roles" && <RolesSection draft={draft} setDraft={setDraft} t={t} disabled={!editable} />}
           {activeTab === "notifications" && <NotificationsSection draft={draft} setDraft={setDraft} t={t} disabled={!editable} />}
           {activeTab === "payroll" && <PayrollExportSection draft={draft} setDraft={setDraft} t={t} disabled={!editable} />}
-          {activeTab === "security" && <SecuritySection draft={draft} setDraft={setDraft} t={t} disabled={!editable} />}
           {activeTab === "integrations" && <IntegrationsSection draft={draft} setDraft={setDraft} t={t} disabled={!editable} />}
           {activeTab === "audit" && <AuditSection draft={draft} setDraft={setDraft} t={t} disabled={!editable} />}
 
@@ -168,16 +165,31 @@ function LeavePolicySection({ draft, setDraft, t, disabled }: SectionProps) {
   </div>;
 }
 
-function SchedulesSection({ draft, setDraft, t, disabled, onAdd }: SectionProps & { onAdd: () => void }) {
+function SchedulesSection({ draft, setDraft, t, disabled }: SectionProps) {
   return <div className="settings-list">
-    {draft.workSchedules.map((schedule, index) => <div className="settings-row-card" key={schedule.id}>
-      <Field label={t.scheduleName}><input disabled={disabled} value={schedule.name} onChange={(e) => updateSchedule(draft, setDraft, index, { name: e.target.value })} /></Field>
-      <Field label={t.standardStartTime}><input disabled={disabled} type="time" value={schedule.startTime} onChange={(e) => updateSchedule(draft, setDraft, index, { startTime: e.target.value })} /></Field>
-      <Field label={t.standardEndTime}><input disabled={disabled} type="time" value={schedule.endTime} onChange={(e) => updateSchedule(draft, setDraft, index, { endTime: e.target.value })} /></Field>
-      <Field label={t.breakMinutes}><input disabled={disabled} type="number" min="0" value={schedule.breakMinutes} onChange={(e) => updateSchedule(draft, setDraft, index, { breakMinutes: Number(e.target.value) })} /></Field>
-      <Field label={t.workDays}><input disabled={disabled} value={schedule.workDays.join(",")} onChange={(e) => updateSchedule(draft, setDraft, index, { workDays: parseWorkDays(e.target.value) })} /></Field>
+    {draft.workSchedules.map((schedule, index) => <div className="settings-row-card schedule-row-card" key={schedule.id}>
+      <div className="schedule-time-group">
+        <span>{t.morningShift}</span>
+        <div className="schedule-time-fields">
+          <Field label={t.morningStartTime}><input disabled={disabled} type="time" value={schedule.startTime} onChange={(e) => updateSchedule(draft, setDraft, index, { startTime: e.target.value })} /></Field>
+          <Field label={t.morningEndTime}><input disabled={disabled} type="time" value={schedule.morningEndTime || "12:00"} onChange={(e) => updateSchedule(draft, setDraft, index, { morningEndTime: e.target.value })} /></Field>
+        </div>
+      </div>
+      <div className="schedule-time-group">
+        <span>{t.afternoonShift}</span>
+        <div className="schedule-time-fields">
+          <Field label={t.afternoonStartTime}><input disabled={disabled} type="time" value={schedule.afternoonStartTime || "13:00"} onChange={(e) => updateSchedule(draft, setDraft, index, { afternoonStartTime: e.target.value })} /></Field>
+          <Field label={t.afternoonEndTime}><input disabled={disabled} type="time" value={schedule.endTime} onChange={(e) => updateSchedule(draft, setDraft, index, { endTime: e.target.value })} /></Field>
+        </div>
+      </div>
+      <div className="schedule-break-summary"><span>{t.breakMinutes}</span><strong>{getBreakMinutes(schedule)} {t.minutes}</strong></div>
+      <div className="work-days-control">
+        <span>{t.workDays}</span>
+        <div>
+          {workDayOptions.map((day) => <label key={day.value}><input disabled={disabled} type="checkbox" checked={schedule.workDays.includes(day.value)} onChange={() => updateSchedule(draft, setDraft, index, { workDays: toggleWorkDay(schedule.workDays, day.value) })} />{t[day.label]}</label>)}
+        </div>
+      </div>
     </div>)}
-    <button className="secondary-button" type="button" disabled={disabled} onClick={onAdd}>{t.addSchedule}</button>
   </div>;
 }
 
@@ -216,14 +228,6 @@ function PayrollExportSection({ draft, setDraft, t, disabled }: SectionProps) {
   </div>;
 }
 
-function SecuritySection({ draft, setDraft, t, disabled }: SectionProps) {
-  return <div className="settings-grid">
-    <Field label={t.minimumPasswordLength}><input disabled={disabled} type="number" min="6" value={draft.security.minPasswordLength} onChange={(e) => setDraft({ ...draft, security: { ...draft.security, minPasswordLength: Number(e.target.value) } })} /></Field>
-    <Field label={t.sessionTimeoutMinutes}><input disabled={disabled} type="number" min="15" value={draft.security.sessionTimeoutMinutes} onChange={(e) => setDraft({ ...draft, security: { ...draft.security, sessionTimeoutMinutes: Number(e.target.value) } })} /></Field>
-    <Toggle label={t.allowSelfRegistration} checked={draft.security.allowSelfRegistration} disabled={disabled} onChange={(checked) => setDraft({ ...draft, security: { ...draft.security, allowSelfRegistration: checked } })} />
-    <Toggle label={t.requireTwoFactor} checked={draft.security.requireTwoFactor} disabled={disabled} onChange={(checked) => setDraft({ ...draft, security: { ...draft.security, requireTwoFactor: checked } })} />
-  </div>;
-}
 
 function IntegrationsSection({ draft, setDraft, t, disabled }: SectionProps) {
   return <div className="settings-grid">
@@ -249,7 +253,7 @@ function Toggle({ label, checked, disabled, onChange }: { label: string; checked
 }
 
 function tabLabel(tab: SettingsTab, t: Translation) {
-  const map: Record<SettingsTab, string> = { attendance: t.attendancePolicies, leave: t.leavePolicies, schedules: t.workSchedules, holidays: t.holidaysSettings, roles: t.rolesPermissions, notifications: t.notificationChannels, payroll: t.payrollExportFormat, security: t.securitySettings, integrations: t.integrationsSettings, audit: t.auditSettings };
+  const map: Record<SettingsTab, string> = { attendance: t.attendancePolicies, leave: t.leavePolicies, schedules: t.workSchedules, holidays: t.holidaysSettings, roles: t.rolesPermissions, notifications: t.notificationChannels, payroll: t.payrollExportFormat, integrations: t.integrationsSettings, audit: t.auditSettings };
   return map[tab];
 }
 
@@ -262,7 +266,7 @@ function canViewTab(role: UserRole, tab: SettingsTab) {
   if (role === "HR") return ["attendance", "leave", "schedules", "holidays", "notifications"].includes(tab);
   if (role === "Payroll") return ["payroll", "notifications"].includes(tab);
   if (role === "Manager") return tab === "notifications";
-  return tab === "notifications" || tab === "security";
+  return tab === "notifications";
 }
 
 function canEditTab(role: UserRole, tab: SettingsTab) {
@@ -273,6 +277,27 @@ function canEditTab(role: UserRole, tab: SettingsTab) {
   return tab === "notifications";
 }
 
+function normalizeScheduleData(settings: SystemSettings): SystemSettings {
+  return {
+    ...settings,
+    holidays: settings.holidays.filter((holiday) => holiday.id !== "holiday-national-day" && holiday.id !== "holiday-thanksgiving"),
+    workSchedules: settings.workSchedules.slice(0, 1).map((schedule) => ({
+      ...schedule,
+      morningEndTime: schedule.morningEndTime || "12:00",
+      afternoonStartTime: schedule.afternoonStartTime || "13:00"
+    }))
+  };
+}
+
+function getBreakMinutes(schedule: WorkScheduleSetting) {
+  return Math.max(0, timeToMinutes(schedule.afternoonStartTime || "13:00") - timeToMinutes(schedule.morningEndTime || "12:00"));
+}
+
+function timeToMinutes(value: string) {
+  const [hours, minutes] = value.split(":").map(Number);
+  return hours * 60 + minutes;
+}
+
 function updateSchedule(draft: SystemSettings, setDraft: (settings: SystemSettings) => void, index: number, patch: Partial<WorkScheduleSetting>) {
   setDraft({ ...draft, workSchedules: draft.workSchedules.map((item, itemIndex) => itemIndex === index ? { ...item, ...patch } : item) });
 }
@@ -281,8 +306,8 @@ function updateHoliday(draft: SystemSettings, setDraft: (settings: SystemSetting
   setDraft({ ...draft, holidays: draft.holidays.map((item, itemIndex) => itemIndex === index ? { ...item, ...patch } : item) });
 }
 
-function parseWorkDays(value: string) {
-  return value.split(",").map((item) => Number(item.trim())).filter((day) => Number.isInteger(day) && day >= 0 && day <= 6);
+function toggleWorkDay(workDays: number[], day: number) {
+  return workDays.includes(day) ? workDays.filter((item) => item !== day) : [...workDays, day].sort((first, second) => first - second);
 }
 
 function validateSettings(settings: SystemSettings, t: Translation) {
@@ -302,7 +327,8 @@ function normalizeSettings(settings: SystemSettings): SystemSettings {
       overtimeAfterHours: Math.max(1, Number(settings.attendancePolicy.overtimeAfterHours) || 8)
     },
     leavePolicy: { ...settings.leavePolicy, defaultAnnualLeaveDays: Math.max(0, Math.floor(settings.leavePolicy.defaultAnnualLeaveDays)) },
-    workSchedules: settings.workSchedules.map((schedule) => ({ ...schedule, breakMinutes: Math.max(0, Math.floor(schedule.breakMinutes)), workDays: schedule.workDays.length ? schedule.workDays : [1, 2, 3, 4, 5] })),
+    holidays: settings.holidays.filter((holiday) => holiday.id !== "holiday-national-day" && holiday.id !== "holiday-thanksgiving"),
+    workSchedules: settings.workSchedules.slice(0, 1).map((schedule) => ({ ...schedule, breakMinutes: getBreakMinutes(schedule), workDays: schedule.workDays.length ? schedule.workDays : [1, 2, 3, 4, 5] })),
     security: { ...settings.security, minPasswordLength: Math.max(6, Math.floor(settings.security.minPasswordLength)), sessionTimeoutMinutes: Math.max(15, Math.floor(settings.security.sessionTimeoutMinutes)) },
     audit: { ...settings.audit, retentionDays: Math.max(30, Math.floor(settings.audit.retentionDays)) }
   };

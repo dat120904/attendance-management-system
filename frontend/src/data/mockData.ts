@@ -1,4 +1,4 @@
-﻿import type { AppNotification, DashboardData, HelpArticle, LeaveRequest, LeaveWorkflowConfig, PayrollPeriod, SupportTicket, SystemSettings, User } from "../types";
+import type { AppNotification, DashboardData, HelpArticle, LeaveRequest, LeaveWorkflowConfig, PayrollPeriod, SupportTicket, SystemSettings, User } from "../types";
 import { addDays, formatLogDate, formatSummaryDate, getNextThanksgiving } from "../utils/time";
 
 export const demoUsers: User[] = [
@@ -14,7 +14,6 @@ export const demoUsers: User[] = [
     managerId: "u-manager",
     hireDate: "2024-03-12",
     employmentStatus: "Active",
-    schedulePolicy: "Standard 8h",
     attendancePolicy: "Office check-in",
     leavePolicy: "Annual 14 days",
     remainingLeaveDays: 14
@@ -31,7 +30,6 @@ export const demoUsers: User[] = [
     managerId: "u-manager",
     hireDate: "2024-06-18",
     employmentStatus: "Active",
-    schedulePolicy: "Standard 8h",
     attendancePolicy: "Office check-in",
     leavePolicy: "Annual 12 days",
     remainingLeaveDays: 11
@@ -48,7 +46,6 @@ export const demoUsers: User[] = [
     managerId: "u-admin",
     hireDate: "2023-11-02",
     employmentStatus: "Active",
-    schedulePolicy: "Manager flexible",
     attendancePolicy: "Office + remote",
     leavePolicy: "Annual 12 days",
     remainingLeaveDays: 10
@@ -65,7 +62,6 @@ export const demoUsers: User[] = [
     managerId: "u-admin",
     hireDate: "2023-08-21",
     employmentStatus: "Active",
-    schedulePolicy: "Standard 8h",
     attendancePolicy: "Office check-in",
     leavePolicy: "Annual 12 days",
     remainingLeaveDays: 12
@@ -82,7 +78,6 @@ export const demoUsers: User[] = [
     managerId: "u-admin",
     hireDate: "2023-09-01",
     employmentStatus: "Active",
-    schedulePolicy: "Payroll cycle",
     attendancePolicy: "Office check-in",
     leavePolicy: "Annual 12 days",
     remainingLeaveDays: 9
@@ -99,7 +94,6 @@ export const demoUsers: User[] = [
     managerId: "",
     hireDate: "2022-01-10",
     employmentStatus: "Active",
-    schedulePolicy: "Admin flexible",
     attendancePolicy: "Office + remote",
     leavePolicy: "Annual 14 days",
     remainingLeaveDays: 14
@@ -284,7 +278,7 @@ export const payrollPeriods: PayrollPeriod[] = [];
 export const systemSettings: SystemSettings = {
   attendancePolicy: {
     standardStartTime: "08:30",
-    standardEndTime: "17:00",
+    standardEndTime: "17:30",
     lateGraceMinutes: 10,
     earlyLeaveGraceMinutes: 10,
     overtimeAfterHours: 8,
@@ -297,13 +291,9 @@ export const systemSettings: SystemSettings = {
     blockAnnualLeaveOverBalance: true
   },
   workSchedules: [
-    { id: "schedule-standard", name: "Standard 8h", startTime: "08:30", endTime: "17:00", breakMinutes: 60, workDays: [1, 2, 3, 4, 5] },
-    { id: "schedule-flex", name: "Flexible", startTime: "09:00", endTime: "18:00", breakMinutes: 60, workDays: [1, 2, 3, 4, 5] }
+    { id: "schedule-standard", startTime: "08:30", morningEndTime: "12:00", afternoonStartTime: "13:00", endTime: "17:30", breakMinutes: 60, workDays: [1, 2, 3, 4, 5] }
   ],
-  holidays: [
-    { id: "holiday-national-day", name: "National Day", startDate: "2026-09-02", endDate: "2026-09-02", paid: true },
-    { id: "holiday-thanksgiving", name: "Thanksgiving", startDate: thanksgiving.toISOString().slice(0, 10), endDate: thanksgiving.toISOString().slice(0, 10), paid: true }
-  ],
+  holidays: [],
   roles: {
     Employee: ["profile:view", "attendance:self", "leave:create", "notification:self"],
     Manager: ["team:view", "leave:approve-manager", "notification:team"],
