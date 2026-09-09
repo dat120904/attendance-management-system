@@ -2915,3 +2915,16 @@ td {
   border-color: #8ea6ff;
   box-shadow: 0 0 0 3px rgba(47, 79, 208, 0.12);
 }
+.confirmation-modal {
+  width: min(100%, 400px);
+}
+
+.confirmation-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+.confirmation-actions button {
+  min-width: 112px;
+}
