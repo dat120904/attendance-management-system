@@ -26,6 +26,7 @@ export default function App() {
   const [language, setLanguage] = useState<Language>("en");
   const [activePage, setActivePage] = useState<AppPage>("dashboard");
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
+  const [isLogoutConfirmationOpen, setIsLogoutConfirmationOpen] = useState(false);
   const [attendanceSession, setAttendanceSession] = useState<AttendanceSession>({
     status: "not-started",
     checkInAt: null,
@@ -127,7 +128,7 @@ export default function App() {
     if (scheduleError) {
       setAttendanceError(scheduleError);
       setAttendanceMessage("");
-      return;
+      return scheduleError;
     }
     const now = new Date();
     setAuthToken(null);
@@ -144,10 +145,11 @@ export default function App() {
     });
     setAttendanceMessage(t.checkInSuccess);
     setAttendanceError("");
+    return "";
   }
 
   function handleQuickCheckIn(nextUser: User) {
-    startSessionForUser(nextUser);
+    return startSessionForUser(nextUser);
   }
 
   function handleNewEmployeeCheckIn(name: string) {
@@ -302,7 +304,13 @@ export default function App() {
     const notification: AppNotification = { id: "notif-ticket-local-" + Date.now(), recipientRole: "Admin", title: "New support request", message: ticket.requesterName + ": " + ticket.subject, category: "system", read: false, createdAt: new Date().toISOString(), emailStatus: "Sent", retryCount: 0 };
     setNotifications((current) => [notification, ...current]);
   }
+  function requestLogout() {
+    setIsMobileMenuOpen(false);
+    setIsLogoutConfirmationOpen(true);
+  }
+
   function handleLogout() {
+    setIsLogoutConfirmationOpen(false);
     setAuthToken(null);
     setUser(null);
     setActivePage("dashboard");
@@ -319,7 +327,7 @@ export default function App() {
 
   return (
     <div className="app-shell">
-      <Sidebar activePage={activePage} onLogout={handleLogout} onNavigate={handleNavigate} user={user} t={t} isOpen={isMobileMenuOpen} onClose={() => setIsMobileMenuOpen(false)} />
+      <Sidebar activePage={activePage} onLogout={requestLogout} onNavigate={handleNavigate} user={user} t={t} isOpen={isMobileMenuOpen} onClose={() => setIsMobileMenuOpen(false)} />
       {isMobileMenuOpen && <button className="sidebar-backdrop" type="button" aria-label={t.close} onClick={() => setIsMobileMenuOpen(false)} />}
       <main className="workspace">
         <Topbar
@@ -330,7 +338,7 @@ export default function App() {
           onAttendanceAction={attendanceSession.status === "working" ? handleCheckOut : handleCheckIn}
           onLanguageChange={setLanguage}
           notifications={scopedLocalNotifications()}
-          onLogout={handleLogout}
+          onLogout={requestLogout}
           onMarkAllNotificationsRead={() => void handleMarkAllNotificationsRead()}
           onMarkNotificationRead={(notificationId) => void handleMarkNotificationRead(notificationId)}
           onRetryNotificationEmail={(notificationId) => void handleRetryNotificationEmail(notificationId)}
@@ -399,6 +407,23 @@ export default function App() {
           </section>
         )}
       </main>
+      {isLogoutConfirmationOpen && (
+        <div className="modal-backdrop" role="presentation">
+          <section className="forgot-modal confirmation-modal" role="dialog" aria-modal="true" aria-labelledby="logout-confirmation-title">
+            <div className="modal-header">
+              <div>
+                <h2 id="logout-confirmation-title">{t.confirmLogout}</h2>
+                <p>{t.confirmLogoutMessage}</p>
+              </div>
+              <button className="modal-close" type="button" aria-label={t.close} onClick={() => setIsLogoutConfirmationOpen(false)}>x</button>
+            </div>
+            <div className="confirmation-actions">
+              <button className="secondary-button" type="button" onClick={() => setIsLogoutConfirmationOpen(false)}>{t.cancel}</button>
+              <button className="primary-button" type="button" onClick={handleLogout}>{t.logout}</button>
+            </div>
+          </section>
+        </div>
+      )}
     </div>
   );
 }

@@ -18,7 +18,7 @@ type AuthPageProps = {
   onLanguageChange: (language: Language) => void;
   onLogin: (email: string, password: string) => Promise<{ ok: boolean; message?: string }>;
   onNewEmployeeCheckIn: (name: string) => void;
-  onQuickCheckIn: (user: User) => void;
+  onQuickCheckIn: (user: User) => string;
   onRegister: (form: RegisterForm) => Promise<{ ok: boolean; message?: string }>;
   t: Translation;
   users: User[];
@@ -32,6 +32,7 @@ export function AuthPage({ language, onLanguageChange, onLogin, onNewEmployeeChe
   const [isForgotOpen, setIsForgotOpen] = useState(false);
   const [isRegisterOpen, setIsRegisterOpen] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [quickCheckInError, setQuickCheckInError] = useState("");
   const [registerForm, setRegisterForm] = useState<RegisterForm>({
     name: "",
     email: "",
@@ -119,7 +120,7 @@ export function AuthPage({ language, onLanguageChange, onLogin, onNewEmployeeChe
                       <strong>{user.name}</strong>
                       <span>{translateRole(user.role, t)} - {user.email}</span>
                     </div>
-                    <button type="button" onClick={() => onQuickCheckIn(user)}>
+                    <button type="button" onClick={() => setQuickCheckInError(onQuickCheckIn(user))}>
                       {t.checkIn}
                     </button>
                   </article>
@@ -253,6 +254,22 @@ export function AuthPage({ language, onLanguageChange, onLogin, onNewEmployeeChe
             )}
           </div>
       </section>
+      {quickCheckInError && (
+        <div className="modal-backdrop" role="presentation">
+          <section className="forgot-modal quick-checkin-modal" role="dialog" aria-modal="true" aria-labelledby="quick-checkin-error-title">
+            <div className="modal-header">
+              <div>
+                <h2 id="quick-checkin-error-title">{t.checkIn}</h2>
+                <p>{quickCheckInError}</p>
+              </div>
+              <button className="modal-close" type="button" aria-label={t.close} onClick={() => setQuickCheckInError("")}>x</button>
+            </div>
+            <div className="confirmation-actions">
+              <button className="primary-button" type="button" onClick={() => setQuickCheckInError("")}>{t.close}</button>
+            </div>
+          </section>
+        </div>
+      )}
     </main>
   );
 }
