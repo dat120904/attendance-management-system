@@ -2928,3 +2928,18 @@ td {
 .confirmation-actions button {
   min-width: 112px;
 }
+.quick-checkin-error {
+  margin: 12px 0 0;
+}
+
+.quick-checkin-modal {
+  width: min(100%, 400px);
+}
+
+.quick-checkin-modal .modal-header {
+  align-items: center;
+}
+
+.quick-checkin-modal .confirmation-actions {
+  justify-content: flex-end;
+}

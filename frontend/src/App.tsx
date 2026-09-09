@@ -128,7 +128,7 @@ export default function App() {
     if (scheduleError) {
       setAttendanceError(scheduleError);
       setAttendanceMessage("");
-      return;
+      return scheduleError;
     }
     const now = new Date();
     setAuthToken(null);
@@ -145,10 +145,11 @@ export default function App() {
     });
     setAttendanceMessage(t.checkInSuccess);
     setAttendanceError("");
+    return "";
   }
 
   function handleQuickCheckIn(nextUser: User) {
-    startSessionForUser(nextUser);
+    return startSessionForUser(nextUser);
   }
 
   function handleNewEmployeeCheckIn(name: string) {
