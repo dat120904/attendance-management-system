@@ -1165,7 +1165,6 @@ function buildEmployee(body: Partial<User>): User {
     managerId: body.managerId || (role === "Manager" || role === "Admin" ? "u-admin" : "u-manager"),
     hireDate: body.hireDate || new Date().toISOString().slice(0, 10),
     employmentStatus: locked ? "Locked" : (body.employmentStatus ?? "Active"),
-    schedulePolicy: body.schedulePolicy?.trim() || "Standard 8h",
     attendancePolicy: body.attendancePolicy?.trim() || "Office check-in",
     leavePolicy: body.leavePolicy?.trim() || "Annual 12 days",
     remainingLeaveDays: Number.isFinite(body.remainingLeaveDays) ? Number(body.remainingLeaveDays) : 12,
@@ -1184,7 +1183,6 @@ function updateEmployee(employee: User, body: Partial<User>) {
   if (typeof body.managerId === "string") employee.managerId = body.managerId;
   if (typeof body.hireDate === "string") employee.hireDate = body.hireDate;
   if (body.employmentStatus) employee.employmentStatus = body.employmentStatus;
-  if (typeof body.schedulePolicy === "string") employee.schedulePolicy = body.schedulePolicy.trim();
   if (typeof body.attendancePolicy === "string") employee.attendancePolicy = body.attendancePolicy.trim();
   if (typeof body.leavePolicy === "string") employee.leavePolicy = body.leavePolicy.trim();
   if (typeof body.remainingLeaveDays === "number" && Number.isFinite(body.remainingLeaveDays)) employee.remainingLeaveDays = Math.max(0, Math.floor(body.remainingLeaveDays));
@@ -1528,7 +1526,7 @@ function validateSystemSettings(body: Partial<SystemSettings>) {
     if (!isPositiveNumber(body.attendancePolicy.overtimeAfterHours)) return "Invalid overtime threshold";
   }
   if (body.leavePolicy && !isNonNegativeNumber(body.leavePolicy.defaultAnnualLeaveDays)) return "Invalid annual leave days";
-  if (body.workSchedules?.some((schedule) => !schedule.name?.trim() || !isTimeValue(schedule.startTime) || !isTimeValue(schedule.endTime) || schedule.endTime <= schedule.startTime || !isNonNegativeNumber(schedule.breakMinutes) || !Array.isArray(schedule.workDays))) return "Invalid work schedule";
+  if (body.workSchedules?.some((schedule) => !isTimeValue(schedule.startTime) || !isTimeValue(schedule.morningEndTime) || !isTimeValue(schedule.afternoonStartTime) || !isTimeValue(schedule.endTime) || !(schedule.startTime < schedule.morningEndTime && schedule.morningEndTime <= schedule.afternoonStartTime && schedule.afternoonStartTime < schedule.endTime) || !Array.isArray(schedule.workDays))) return "Invalid work schedule";
   if (body.holidays?.some((holiday) => !holiday.name?.trim() || !holiday.startDate || !holiday.endDate || holiday.endDate < holiday.startDate)) return "Invalid holiday";
   if (body.payrollExport && body.payrollExport.defaultFormat !== "excel" && body.payrollExport.defaultFormat !== "pdf") return "Invalid payroll export format";
   if (body.security && (!isPositiveNumber(body.security.minPasswordLength) || body.security.minPasswordLength < 6 || !isPositiveNumber(body.security.sessionTimeoutMinutes) || body.security.sessionTimeoutMinutes < 15)) return "Invalid security settings";
@@ -1545,7 +1543,7 @@ function updateSystemSettings(body: Partial<SystemSettings>) {
     leaveWorkflowConfig.requireHrApproval = systemSettings.leavePolicy.requireHrApproval;
     leaveWorkflowConfig.annualLeaveRequiresBalance = systemSettings.leavePolicy.blockAnnualLeaveOverBalance;
   }
-  if (body.workSchedules) systemSettings.workSchedules = body.workSchedules.map((schedule) => ({ ...schedule, breakMinutes: Math.max(0, Math.floor(schedule.breakMinutes)), workDays: schedule.workDays.filter((day) => Number.isInteger(day) && day >= 0 && day <= 6) }));
+  if (body.workSchedules) systemSettings.workSchedules = body.workSchedules.map((schedule) => ({ ...schedule, breakMinutes: Math.max(0, toMinutes(schedule.afternoonStartTime) - toMinutes(schedule.morningEndTime)), workDays: schedule.workDays.filter((day) => Number.isInteger(day) && day >= 0 && day <= 6) }));
   if (body.holidays) systemSettings.holidays = body.holidays;
   if (body.roles) systemSettings.roles = { ...systemSettings.roles, ...body.roles };
   if (body.notifications) systemSettings.notifications = { ...systemSettings.notifications, ...body.notifications };
@@ -1810,10 +1808,10 @@ function readJsonBody<T>(request: IncomingMessage): Promise<T> {
 
 
 
-function getCheckInRestriction(now: Date, user: { schedulePolicy?: string }) {
+function getCheckInRestriction(now: Date, user: object) {
   const isoDate = now.toISOString().slice(0, 10);
   if (systemSettings.holidays.some((holiday) => isoDate >= holiday.startDate && isoDate <= holiday.endDate)) return "Check-in is unavailable on a holiday";
-  const schedule = systemSettings.workSchedules.find((item) => item.name === user.schedulePolicy) ?? systemSettings.workSchedules[0];
+  const schedule = systemSettings.workSchedules[0];
   if (!schedule || !schedule.workDays.includes(now.getDay())) return "Today is not a scheduled workday";
   const currentMinutes = now.getHours() * 60 + now.getMinutes();
   const startMinutes = toMinutes(schedule.startTime);

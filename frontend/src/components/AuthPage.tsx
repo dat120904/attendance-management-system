@@ -31,6 +31,7 @@ export function AuthPage({ language, onLanguageChange, onLogin, onNewEmployeeChe
   const [forgotEmail, setForgotEmail] = useState(users[0]?.email ?? "");
   const [isForgotOpen, setIsForgotOpen] = useState(false);
   const [isRegisterOpen, setIsRegisterOpen] = useState(false);
+  const [isSubmitting, setIsSubmitting] = useState(false);
   const [registerForm, setRegisterForm] = useState<RegisterForm>({
     name: "",
     email: "",
@@ -44,9 +45,15 @@ export function AuthPage({ language, onLanguageChange, onLogin, onNewEmployeeChe
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setMessage("");
-    const result = await onLogin(selectedEmail, password);
-    if (!result.ok) {
-      setMessage(result.message ?? "Login failed");
+    setIsSubmitting(true);
+
+    try {
+      const result = await onLogin(selectedEmail, password);
+      if (!result.ok) {
+        setMessage(result.message ?? "Login failed");
+      }
+    } finally {
+      setIsSubmitting(false);
     }
   }
 
@@ -184,8 +191,8 @@ export function AuthPage({ language, onLanguageChange, onLogin, onNewEmployeeChe
                 </div>
               )}
               {message && <p className="form-message">{message}</p>}
-              <button className="secondary-button" type="submit">
-                {t.login}
+              <button className="secondary-button" type="submit" disabled={isSubmitting}>
+                {isSubmitting ? `${t.login}...` : t.login}
               </button>
               <div className="auth-footer">
                 <span>{t.noAccount}</span>

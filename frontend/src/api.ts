@@ -82,10 +82,24 @@ type AuditLogsResponse = {
 };
 
 export async function loginWithPassword(email: string, password: string) {
-  return request<LoginResponse>("/api/auth/login", {
-    method: "POST",
-    body: JSON.stringify({ email, password })
-  });
+  const controller = new AbortController();
+  const timeout = window.setTimeout(() => controller.abort(), 8_000);
+
+  try {
+    return await request<LoginResponse>("/api/auth/login", {
+      method: "POST",
+      body: JSON.stringify({ email, password }),
+      signal: controller.signal
+    });
+  } catch (error) {
+    if (error instanceof DOMException && error.name === "AbortError") {
+      throw new Error("The server is taking too long to respond.");
+    }
+
+    throw error;
+  } finally {
+    window.clearTimeout(timeout);
+  }
 }
 
 export async function registerAccount(form: { name: string; email: string; role: User["role"]; department: string; password: string; confirmPassword: string }) {

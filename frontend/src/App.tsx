@@ -16,6 +16,7 @@ import type { Language, Translation } from "./i18n";
 import { translations } from "./i18n";
 import type { AppPage, AppNotification, AttendanceLog, AttendanceSession, HelpArticle, LeaveRequest, LeaveWorkflowConfig, PayrollPeriod, SupportTicket, SystemSettings, User } from "./types";
 import { formatClockTime, formatLogDate, formatTotalHours } from "./utils/time";
+import { canAccessPage } from "./utils/permissions";
 
 export default function App() {
   const [users, setUsers] = useState<User[]>(demoUsers);
@@ -307,9 +308,18 @@ export default function App() {
     setActivePage("dashboard");
   }
 
+  function handleNavigate(page: AppPage) {
+    if (!user || canAccessPage(user.role, page)) {
+      setActivePage(page);
+      return;
+    }
+
+    setActivePage("dashboard");
+  }
+
   return (
     <div className="app-shell">
-      <Sidebar activePage={activePage} onLogout={handleLogout} onNavigate={setActivePage} user={user} t={t} isOpen={isMobileMenuOpen} onClose={() => setIsMobileMenuOpen(false)} />
+      <Sidebar activePage={activePage} onLogout={handleLogout} onNavigate={handleNavigate} user={user} t={t} isOpen={isMobileMenuOpen} onClose={() => setIsMobileMenuOpen(false)} />
       {isMobileMenuOpen && <button className="sidebar-backdrop" type="button" aria-label={t.close} onClick={() => setIsMobileMenuOpen(false)} />}
       <main className="workspace">
         <Topbar
@@ -340,7 +350,7 @@ export default function App() {
             onCheckOut={handleCheckOut}
             t={t}
             user={user}
-            onNavigate={setActivePage}
+            onNavigate={handleNavigate}
           />
         )}
         {activePage === "attendanceLogs" && <AttendanceLogsPage authToken={authToken} logs={logs} onLogsChange={setLogs} t={t} user={user} />}
@@ -415,7 +425,7 @@ function getCheckInRestriction(now: Date, currentUser: User | null, settings: Sy
   if (!currentUser) return "";
   const isoDate = now.toISOString().slice(0, 10);
   if (settings.holidays.some((holiday) => isoDate >= holiday.startDate && isoDate <= holiday.endDate)) return t.checkInHoliday;
-  const schedule = settings.workSchedules.find((item) => item.name === currentUser.schedulePolicy) ?? settings.workSchedules[0];
+  const schedule = settings.workSchedules[0];
   if (!schedule || !schedule.workDays.includes(now.getDay())) return t.checkInDayOff;
   const currentMinutes = now.getHours() * 60 + now.getMinutes();
   const startMinutes = toMinutes(schedule.startTime);

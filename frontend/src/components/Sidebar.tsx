@@ -2,6 +2,7 @@ import type { AppPage, User } from "../types";
 import type { Translation } from "../i18n";
 import { BuildingIcon } from "./icons";
 import { translateDepartment } from "../utils/localize";
+import { canAccessPage } from "../utils/permissions";
 
 const navItems = [
   ["dashboard", "grid-icon"],
@@ -29,6 +30,7 @@ type SidebarProps = {
 
 export function Sidebar({ activePage, onLogout, onNavigate, user, t, isOpen, onClose }: SidebarProps) {
   const navigate = (page: AppPage) => { onNavigate(page); onClose(); };
+  const visibleNavItems = navItems.filter(([page]) => canAccessPage(user.role, page));
   return (
     <aside id="main-navigation" className={`sidebar ${isOpen ? "is-open" : ""}`} aria-label="Main navigation">
       <div className="brand">
@@ -42,7 +44,7 @@ export function Sidebar({ activePage, onLogout, onNavigate, user, t, isOpen, onC
       </div>
 
       <nav className="main-nav">
-        {navItems.filter(([label]) => canAccessPage(label, user.role)).map(([label, icon]) => (
+        {visibleNavItems.map(([label, icon]) => (
           <button className={`nav-item ${activePage === label ? "active" : ""}`} type="button" aria-current={activePage === label ? "page" : undefined} key={label} onClick={() => navigate(label)}>
             <span className={`nav-icon ${icon}`} aria-hidden="true" />
             {t[label]}
@@ -60,12 +62,4 @@ export function Sidebar({ activePage, onLogout, onNavigate, user, t, isOpen, onC
       </nav>
     </aside>
   );
-}
-
-
-function canAccessPage(page: AppPage, role: User["role"]) {
-  if (page === "payrollSummaries") return role !== "Employee";
-  if (page === "employeeManagement") return role !== "Employee";
-  if (page === "settings") return role === "HR" || role === "Payroll" || role === "Admin";
-  return page === "dashboard" || page === "attendanceLogs" || page === "leaveRequests";
 }
