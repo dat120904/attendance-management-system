@@ -6,10 +6,11 @@ export function formatDuration(totalSeconds: number) {
   return `${hours}:${minutes}:${seconds}`;
 }
 
-export function formatClockTime(date: Date) {
-  return date.toLocaleTimeString("en-US", {
+export function formatClockTime(date: Date, locale: "en-US" | "vi-VN" = "en-US") {
+  return date.toLocaleTimeString(locale, {
     hour: "2-digit",
-    minute: "2-digit"
+    minute: "2-digit",
+    hour12: locale === "en-US"
   });
 }
 
@@ -66,4 +67,22 @@ export function formatTotalHours(totalSeconds: number) {
   const minutes = Math.floor((totalSeconds % 3600) / 60);
 
   return `${hours}h ${minutes}m`;
+}
+
+export function formatWorkDate(workDate: string, locale: "en-US" | "vi-VN") {
+  const date = new Date(`${workDate}T00:00:00`);
+  return date.toLocaleDateString(locale, {
+    weekday: "short",
+    month: "short",
+    day: "numeric"
+  });
+}
+export function formatAttendanceTime(value: string, locale: "en-US" | "vi-VN") {
+  if (locale === "en-US" || value === "--") return value;
+  const match = value.match(/^(\d{1,2}):(\d{2})\s*(AM|PM)$/i);
+  if (!match) return value;
+  let hours = Number(match[1]);
+  if (match[3].toUpperCase() === "PM" && hours !== 12) hours += 12;
+  if (match[3].toUpperCase() === "AM" && hours === 12) hours = 0;
+  return `${String(hours).padStart(2, "0")}:${match[2]}`;
 }

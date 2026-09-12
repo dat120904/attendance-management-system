@@ -1,4 +1,4 @@
-﻿import { type FormEvent, useEffect, useMemo, useState } from "react";
+import { type FormEvent, useEffect, useMemo, useState } from "react";
 import {
   confirmPayrollPeriod,
   createPayrollPeriod,
@@ -9,11 +9,12 @@ import {
   unlockPayrollPeriod
 } from "../api";
 import type { AttendanceLog, PayrollPeriod, PayrollSummaryRow, SystemSettings, User } from "../types";
-import type { Translation } from "../i18n";
+import type { Language, Translation } from "../i18n";
 import { translateDepartment, translatePayrollStatus } from "../utils/localize";
 
 type PayrollSummariesPageProps = {
   authToken: string | null;
+  language: Language;
   logs: AttendanceLog[];
   periods: PayrollPeriod[];
   onLogsChange: (logs: AttendanceLog[]) => void;
@@ -23,7 +24,7 @@ type PayrollSummariesPageProps = {
   user: User;
 };
 
-export function PayrollSummariesPage({ authToken, logs, periods, onLogsChange, onPeriodsChange, settings, t, user }: PayrollSummariesPageProps) {
+export function PayrollSummariesPage({ authToken, language, logs, periods, onLogsChange, onPeriodsChange, settings, t, user }: PayrollSummariesPageProps) {
   const labels = {
     title: t.payrollSummaries,
     scopeEmployee: t.payrollScopeEmployee,
@@ -231,7 +232,7 @@ export function PayrollSummariesPage({ authToken, logs, periods, onLogsChange, o
             <section className="detail-card payroll-detail-card">
             <div className="audit-panel payroll-version-panel">
               <h4>{labels.versions}</h4>
-              {selectedPeriod?.versions.length ? selectedPeriod.versions.map((version) => <p key={`${version.version}-${version.createdAt}`}>v{version.version} - {translateVersionAction(version.action, t)} - {new Date(version.createdAt).toLocaleString()}</p>) : <p>{labels.noVersions}</p>}
+              {selectedPeriod?.versions.length ? selectedPeriod.versions.map((version) => <p key={`${version.version}-${version.createdAt}`}>v{version.version} - {translateVersionAction(version.action, t)} - {new Date(version.createdAt).toLocaleString(language === "vi" ? "vi-VN" : "en-US")}</p>) : <p>{labels.noVersions}</p>}
             </div>
           </section>
         </aside>
@@ -329,7 +330,7 @@ function translatePayrollWarning(warning: string, t: Translation) {
   if (pendingAdjustmentMatch) return t.pendingAdjustmentWarningTemplate.replace("{count}", pendingAdjustmentMatch[1]);
 
   const englishMatch = warning.match(/^(.+) has (\d+) unresolved attendance item\(s\)$/) ?? warning.match(/^(.+) has (\d+) log\(s\) to resolve$/);
-  const vietnameseMatch = warning.match(/^(.+) còn (\d+) log cần xử lý$/);
+  const vietnameseMatch = warning.match(/^(.+) còn (\d+) (?:log|bản ghi) cần xử lý$/);
   const match = englishMatch ?? vietnameseMatch;
   if (!match) return warning;
   return t.payrollWarningTemplate.replace("{name}", match[1]).replace("{count}", match[2]);

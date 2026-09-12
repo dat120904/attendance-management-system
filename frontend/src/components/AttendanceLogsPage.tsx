@@ -1,14 +1,16 @@
 import { useEffect, useMemo, useState } from "react";
 import { decideAttendanceAdjustment, downloadAttendanceExport, fetchAttendanceLogs, fetchAuditLogs, requestAttendanceAdjustment } from "../api";
 import type { AttendanceLog, User } from "../types";
-import type { Translation } from "../i18n";
+import type { Language, Translation } from "../i18n";
 import { translateDepartment } from "../utils/localize";
+import { formatAttendanceTime, formatWorkDate } from "../utils/time";
 
 type DateRange = "day" | "week" | "month";
 type StatusFilter = "All" | AttendanceLog["status"];
 
 type AttendanceLogsPageProps = {
   authToken: string | null;
+  language: Language;
   logs: AttendanceLog[];
   onLogsChange: (logs: AttendanceLog[]) => void;
   t: Translation;
@@ -17,8 +19,9 @@ type AttendanceLogsPageProps = {
 
 const statusFilters: StatusFilter[] = ["All", "On Time", "Late", "Early Leave", "On Leave", "Missing Check-out", "Holiday", "Weekend", "Adjusted"];
 
-export function AttendanceLogsPage({ authToken, logs, onLogsChange, t, user }: AttendanceLogsPageProps) {
+export function AttendanceLogsPage({ authToken, language, logs, onLogsChange, t, user }: AttendanceLogsPageProps) {
   const [dateRange, setDateRange] = useState<DateRange>("week");
+  const locale = language === "vi" ? "vi-VN" : "en-US";
   const [status, setStatus] = useState<StatusFilter>("All");
   const [query, setQuery] = useState("");
   const [selectedLog, setSelectedLog] = useState<AttendanceLog | null>(logs[0] ?? null);
@@ -60,7 +63,7 @@ export function AttendanceLogsPage({ authToken, logs, onLogsChange, t, user }: A
     fetchAuditLogs(authToken)
       .then(({ auditLogs }) => {
         if (!isActive) return;
-        setRemoteAuditLogs(auditLogs.map((entry) => `${new Date(entry.createdAt).toLocaleString()} - ${entry.action} (${entry.targetId})`));
+        setRemoteAuditLogs(auditLogs.map((entry) => `${new Date(entry.createdAt).toLocaleString(locale)} - ${formatAuditAction(entry.action, language)} (${entry.targetId})`));
       })
       .catch(() => {
         if (isActive) setRemoteAuditLogs([]);
@@ -69,7 +72,7 @@ export function AttendanceLogsPage({ authToken, logs, onLogsChange, t, user }: A
     return () => {
       isActive = false;
     };
-  }, [authToken, dateRange, query, refreshKey, status]);
+  }, [authToken, dateRange, locale, query, refreshKey, status]);
 
   const localScopedLogs = useMemo(() => {
     const byRole = getRoleScopedLogs(logs, user);
@@ -115,7 +118,7 @@ export function AttendanceLogsPage({ authToken, logs, onLogsChange, t, user }: A
     onLogsChange(nextLogs);
     setSelectedLog({ ...log, adjustmentStatus: "Pending" });
     setNotice(t.adjustmentRequested);
-    addAudit(`${user.name} requested adjustment for ${log.employeeName} - ${log.workDate}`);
+    addAudit(t.adjustmentRequested);
   }
 
   async function handleDecision(log: AttendanceLog, adjustmentStatus: "Approved" | "Rejected") {
@@ -147,7 +150,7 @@ export function AttendanceLogsPage({ authToken, logs, onLogsChange, t, user }: A
     onLogsChange(nextLogs);
     setSelectedLog({ ...log, adjustmentStatus, status: adjustmentStatus === "Approved" ? "Adjusted" : log.status });
     setNotice(adjustmentStatus === "Approved" ? t.adjustmentApproved : t.adjustmentRejected);
-    addAudit(`${user.name} ${adjustmentStatus.toLowerCase()} adjustment for ${log.employeeName} - ${log.workDate}`);
+    addAudit(adjustmentStatus === "Approved" ? t.adjustmentApproved : t.adjustmentRejected);
   }
 
   async function handleExport(format: "Excel" | "PDF") {
@@ -167,12 +170,12 @@ export function AttendanceLogsPage({ authToken, logs, onLogsChange, t, user }: A
       return;
     }
 
-    downloadExport(format, scopedLogs, t);
+    downloadExport(format, scopedLogs, t, locale);
     setNotice(t.exportReady.replace("{format}", format).replace("{count}", `${scopedLogs.length}`));
   }
 
   function addAudit(entry: string) {
-    setAuditLogs((current) => [`${new Date().toLocaleString()} - ${entry}`, ...current].slice(0, 5));
+    setAuditLogs((current) => [`${new Date().toLocaleString(locale)} - ${entry}`, ...current].slice(0, 5));
   }
 
   return (
@@ -212,8 +215,8 @@ export function AttendanceLogsPage({ authToken, logs, onLogsChange, t, user }: A
         </label>
       </div>
 
-      {isLoading && <div className="attendance-toast success">Loading attendance logs...</div>}
-      {apiError && <div className="attendance-toast warning">Backend unavailable, showing demo data. {apiError}</div>}
+      {isLoading && <div className="attendance-toast success">{t.loadingAttendanceLogs}</div>}
+      {apiError && <div className="attendance-toast warning">{t.attendanceBackendFallback} {apiError}</div>}
       {notice && <div className="attendance-toast success">{notice}</div>}
 
       <div className="logs-layout">
@@ -236,11 +239,11 @@ export function AttendanceLogsPage({ authToken, logs, onLogsChange, t, user }: A
               <tbody>
                 {scopedLogs.map((log) => (
                   <tr className={selectedLog?.id === log.id ? "selected-row" : ""} key={log.id} onClick={() => setSelectedLog(log)}>
-                    <td data-label={t.date}>{log.date}</td>
+                    <td data-label={t.date}>{formatWorkDate(log.workDate, locale)}</td>
                     <td data-label={t.employee}>{log.employeeName}</td>
                     <td data-label={t.department}>{translateDepartment(log.department, t)}</td>
-                    <td data-label={t.checkInColumn}>{log.checkIn}</td>
-                    <td data-label={t.checkOutColumn}>{log.checkOut}</td>
+                    <td data-label={t.checkInColumn}>{formatAttendanceTime(log.checkIn, locale)}</td>
+                    <td data-label={t.checkOutColumn}>{formatAttendanceTime(log.checkOut, locale)}</td>
                     <td data-label={t.totalHours}>{log.totalHours}</td>
                     <td data-label={t.overtime}>{log.overtime}</td>
                     <td data-label={t.status}><span className={`badge ${statusClassName(log.status)}`}>{translateStatus(log.status, t)}</span></td>
@@ -263,10 +266,10 @@ export function AttendanceLogsPage({ authToken, logs, onLogsChange, t, user }: A
             <>
               <h3>{selectedLog.employeeName}</h3>
               <dl>
-                <div><dt>{t.date}</dt><dd>{selectedLog.date}</dd></div>
+                <div><dt>{t.date}</dt><dd>{formatWorkDate(selectedLog.workDate, locale)}</dd></div>
                 <div><dt>{t.department}</dt><dd>{translateDepartment(selectedLog.department, t)}</dd></div>
-                <div><dt>{t.checkInColumn}</dt><dd>{selectedLog.checkIn}</dd></div>
-                <div><dt>{t.checkOutColumn}</dt><dd>{selectedLog.checkOut}</dd></div>
+                <div><dt>{t.checkInColumn}</dt><dd>{formatAttendanceTime(selectedLog.checkIn, locale)}</dd></div>
+                <div><dt>{t.checkOutColumn}</dt><dd>{formatAttendanceTime(selectedLog.checkOut, locale)}</dd></div>
                 <div><dt>{t.totalHours}</dt><dd>{selectedLog.totalHours}</dd></div>
                 <div><dt>{t.overtime}</dt><dd>{selectedLog.overtime}</dd></div>
               </dl>
@@ -351,14 +354,47 @@ function isWithinDateRange(workDate: string, dateRange: DateRange, now: Date) {
   return date.getFullYear() === now.getFullYear() && date.getMonth() === now.getMonth();
 }
 
-function downloadExport(format: "Excel" | "PDF", logs: AttendanceLog[], t: Translation) {
+function formatAuditAction(action: string, language: Language) {
+  if (language !== "vi") return action;
+
+  const labels: Record<string, string> = {
+    "employee.created": "Đã tạo nhân viên",
+    "employee.updated": "Đã cập nhật nhân viên",
+    "employee.locked": "Đã khóa tài khoản nhân viên",
+    "employee.unlocked": "Đã mở khóa tài khoản nhân viên",
+    "employee.imported": "Đã nhập danh sách nhân viên",
+    "leave.workflow.updated": "Đã cập nhật quy trình đơn nghỉ",
+    "leave.request.draft_saved": "Đã lưu nháp đơn nghỉ",
+    "leave.request.created": "Đã tạo đơn nghỉ",
+    "leave.request.draft_updated": "Đã cập nhật nháp đơn nghỉ",
+    "leave.request.submitted": "Đã gửi đơn nghỉ",
+    "leave.request.cancelled": "Đã hủy đơn nghỉ",
+    "leave.request.rejected": "Đã từ chối đơn nghỉ",
+    "leave.request.manager_approved": "Quản lý đã duyệt đơn nghỉ",
+    "leave.request.final_approved": "Đã duyệt đơn nghỉ",
+    "notification.email_retried": "Đã gửi lại email thông báo",
+    "support.ticket.created": "Đã tạo yêu cầu hỗ trợ",
+    "settings.updated": "Đã cập nhật cài đặt",
+    "payroll.period.created": "Đã tạo kỳ lương",
+    "payroll.period.recalculated": "Đã tính lại kỳ lương",
+    "payroll.period.confirmed": "Đã xác nhận kỳ lương",
+    "payroll.period.locked": "Đã khóa kỳ lương",
+    "payroll.period.unlocked": "Đã mở khóa kỳ lương",
+    "attendance.adjustment.requested": "Đã yêu cầu điều chỉnh chấm công",
+    "attendance.adjustment.approved": "Đã duyệt điều chỉnh chấm công",
+    "attendance.adjustment.rejected": "Đã từ chối điều chỉnh chấm công"
+  };
+
+  return labels[action] ?? action;
+}
+function downloadExport(format: "Excel" | "PDF", logs: AttendanceLog[], t: Translation, locale: "en-US" | "vi-VN") {
   const headers = [t.date, t.employee, t.department, t.checkInColumn, t.checkOutColumn, t.totalHours, t.overtime, t.status, t.adjustmentStatus];
   const rows = logs.map((log) => [
-    log.date,
+    formatWorkDate(log.workDate, locale),
     log.employeeName,
     translateDepartment(log.department, t),
-    log.checkIn,
-    log.checkOut,
+    formatAttendanceTime(log.checkIn, locale),
+    formatAttendanceTime(log.checkOut, locale),
     log.totalHours,
     log.overtime,
     translateStatus(log.status, t),

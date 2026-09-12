@@ -27,6 +27,7 @@ export default function App() {
   const [activePage, setActivePage] = useState<AppPage>("dashboard");
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const [isLogoutConfirmationOpen, setIsLogoutConfirmationOpen] = useState(false);
+  const [pendingAttendanceAction, setPendingAttendanceAction] = useState<"check-in" | "check-out" | null>(null);
   const [attendanceSession, setAttendanceSession] = useState<AttendanceSession>({
     status: "not-started",
     checkInAt: null,
@@ -304,6 +305,17 @@ export default function App() {
     const notification: AppNotification = { id: "notif-ticket-local-" + Date.now(), recipientRole: "Admin", title: "New support request", message: ticket.requesterName + ": " + ticket.subject, category: "system", read: false, createdAt: new Date().toISOString(), emailStatus: "Sent", retryCount: 0 };
     setNotifications((current) => [notification, ...current]);
   }
+  function requestAttendanceAction() {
+    setPendingAttendanceAction(attendanceSession.status === "working" ? "check-out" : "check-in");
+  }
+
+  function confirmAttendanceAction() {
+    const action = pendingAttendanceAction;
+    setPendingAttendanceAction(null);
+    if (action === "check-out") handleCheckOut();
+    if (action === "check-in") handleCheckIn();
+  }
+
   function requestLogout() {
     setIsMobileMenuOpen(false);
     setIsLogoutConfirmationOpen(true);
@@ -335,7 +347,7 @@ export default function App() {
           attendanceSession={attendanceSession}
           isAttendanceBusy={isAttendanceBusy}
           language={language}
-          onAttendanceAction={attendanceSession.status === "working" ? handleCheckOut : handleCheckIn}
+          onAttendanceAction={requestAttendanceAction}
           onLanguageChange={setLanguage}
           notifications={scopedLocalNotifications()}
           onLogout={requestLogout}
@@ -353,15 +365,17 @@ export default function App() {
             attendanceMessage={attendanceMessage}
             attendanceSession={attendanceSession}
             isAttendanceBusy={isAttendanceBusy}
+            language={language}
             logs={logs}
-            onCheckIn={handleCheckIn}
-            onCheckOut={handleCheckOut}
+            settings={systemSettings}
+            onCheckIn={requestAttendanceAction}
+            onCheckOut={requestAttendanceAction}
             t={t}
             user={user}
             onNavigate={handleNavigate}
           />
         )}
-        {activePage === "attendanceLogs" && <AttendanceLogsPage authToken={authToken} logs={logs} onLogsChange={setLogs} t={t} user={user} />}
+        {activePage === "attendanceLogs" && <AttendanceLogsPage authToken={authToken} language={language} logs={logs} onLogsChange={setLogs} t={t} user={user} />}
         {activePage === "leaveRequests" && (
           <LeaveRequestsPage
             authToken={authToken}
@@ -377,6 +391,7 @@ export default function App() {
         )}
         {activePage === "payrollSummaries" && (
           <PayrollSummariesPage
+            language={language}
             authToken={authToken}
             logs={logs}
             periods={payrollPeriods}
@@ -390,6 +405,7 @@ export default function App() {
         {activePage === "employeeManagement" && (
           <EmployeeManagementPage
             authToken={authToken}
+            language={language}
             logs={logs}
             onUsersChange={setUsers}
             t={t}
@@ -407,6 +423,23 @@ export default function App() {
           </section>
         )}
       </main>
+      {pendingAttendanceAction && (
+        <div className="modal-backdrop" role="presentation">
+          <section className="forgot-modal confirmation-modal" role="dialog" aria-modal="true" aria-labelledby="attendance-confirmation-title">
+            <div className="modal-header">
+              <div>
+                <h2 id="attendance-confirmation-title">{pendingAttendanceAction === "check-in" ? t.confirmCheckIn : t.confirmCheckOut}</h2>
+                <p>{pendingAttendanceAction === "check-in" ? t.confirmCheckInMessage : t.confirmCheckOutMessage}</p>
+              </div>
+              <button className="modal-close" type="button" aria-label={t.close} onClick={() => setPendingAttendanceAction(null)}>x</button>
+            </div>
+            <div className="confirmation-actions">
+              <button className="secondary-button" type="button" onClick={() => setPendingAttendanceAction(null)}>{t.cancel}</button>
+              <button className="primary-button" type="button" onClick={confirmAttendanceAction}>{t.confirmAction}</button>
+            </div>
+          </section>
+        </div>
+      )}
       {isLogoutConfirmationOpen && (
         <div className="modal-backdrop" role="presentation">
           <section className="forgot-modal confirmation-modal" role="dialog" aria-modal="true" aria-labelledby="logout-confirmation-title">
