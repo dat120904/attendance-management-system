@@ -118,7 +118,7 @@ export function AuthPage({ language, onLanguageChange, onLogin, onNewEmployeeChe
                     <div className="employee-avatar">{user.name.charAt(0)}</div>
                     <div>
                       <strong>{user.name}</strong>
-                      <span>{translateRole(user.role, t)} - {user.email}</span>
+                      <span>{translateRole(user.role, t)}{user.employeeCode ? ` - ${user.employeeCode}` : ""}</span>
                     </div>
                     <button type="button" onClick={() => setQuickCheckInError(onQuickCheckIn(user))}>
                       {t.checkIn}

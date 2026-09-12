@@ -13,6 +13,7 @@ import {
 import type { AttendanceLog, LeaveAttachment, LeaveRequest, LeaveType, LeaveWorkflowConfig, User } from "../types";
 import type { Translation } from "../i18n";
 import { formatLogDate } from "../utils/time";
+import { translateDepartment, translateLeaveReason } from "../utils/localize";
 
 type LeaveRequestsPageProps = {
   authToken: string | null;
@@ -58,6 +59,8 @@ export function LeaveRequestsPage({
   const [draftWorkflow, setDraftWorkflow] = useState(workflowConfig);
   const [isCreateOpen, setIsCreateOpen] = useState(false);
   const [draftReason, setDraftReason] = useState("");
+  const [selectedRequestIds, setSelectedRequestIds] = useState<string[]>([]);
+  const [isBulkProcessing, setIsBulkProcessing] = useState(false);
 
   useEffect(() => {
     setDraftWorkflow(workflowConfig);
@@ -100,6 +103,9 @@ export function LeaveRequestsPage({
 
   const sourceRequests = remoteRequests ?? requests;
   const scopedRequests = useMemo(() => getRoleScopedRequests(sourceRequests, user), [sourceRequests, user]);
+  const approvableRequests = useMemo(() => scopedRequests.filter((request) => canApprove(user, request)), [scopedRequests, user]);
+  const selectedApprovals = approvableRequests.filter((request) => selectedRequestIds.includes(request.id));
+  const areAllApprovableSelected = approvableRequests.length > 0 && selectedApprovals.length === approvableRequests.length;
   const requestedDays = calculateDays(form.startDate, form.endDate);
   const remainingLeaveAfterRequest = user.remainingLeaveDays - requestedDays;
 
@@ -240,6 +246,47 @@ export function LeaveRequestsPage({
       updateLocalBalance(nextRequest);
     }
     setNotice(decision === "approve" ? t.leaveApproved : t.leaveRejected);
+  }
+
+  function toggleRequestSelection(requestId: string) {
+    setSelectedRequestIds((current) => current.includes(requestId) ? current.filter((id) => id !== requestId) : [...current, requestId]);
+  }
+
+  function toggleAllApprovableRequests() {
+    setSelectedRequestIds(areAllApprovableSelected ? [] : approvableRequests.map((request) => request.id));
+  }
+
+  async function handleBulkDecision(decision: "approve" | "reject") {
+    if (!selectedApprovals.length) return;
+    setIsBulkProcessing(true);
+    try {
+      if (authToken) {
+        for (const request of selectedApprovals) {
+          const result = await decideLeaveRequest(authToken, request.id, decision);
+          syncRequestResult(result);
+        }
+        setRefreshKey((current) => current + 1);
+      } else {
+        let nextRequests = requests;
+        const createdLogs: AttendanceLog[] = [];
+        for (const request of selectedApprovals) {
+          const nextRequest = advanceLocalRequest(request, user, decision, workflowConfig);
+          nextRequests = updateRequestList(nextRequests, nextRequest);
+          if (nextRequest.status === "Approved") {
+            createdLogs.push(...toLeaveAttendanceLogs(nextRequest));
+            updateLocalBalance(nextRequest);
+          }
+        }
+        onRequestsChange(nextRequests);
+        if (createdLogs.length) onAttendanceLogsCreated(createdLogs);
+      }
+      setSelectedRequestIds([]);
+      setNotice(t.bulkLeaveUpdated.replace("{count}", `${selectedApprovals.length}`));
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : t.noPermission);
+    } finally {
+      setIsBulkProcessing(false);
+    }
   }
 
   async function handleCancel(request: LeaveRequest) {
@@ -424,10 +471,19 @@ export function LeaveRequestsPage({
         </div>
 
         <section className="leave-list-panel">
+          {approvableRequests.length > 0 && <div className="leave-bulk-toolbar">
+            <label><input type="checkbox" checked={areAllApprovableSelected} onChange={toggleAllApprovableRequests} /> {t.selectAll}</label>
+            <span>{t.selectedRequests.replace("{count}", `${selectedApprovals.length}`)}</span>
+            <div>
+              <button type="button" disabled={!selectedApprovals.length || isBulkProcessing} onClick={() => void handleBulkDecision("approve")}>{t.approveSelected}</button>
+              <button type="button" disabled={!selectedApprovals.length || isBulkProcessing} onClick={() => void handleBulkDecision("reject")}>{t.rejectSelected}</button>
+            </div>
+          </div>}
           <div className="table-wrap">
-            <table>
+            <table className={approvableRequests.length > 0 ? "leave-approval-table" : ""}>
               <thead>
                 <tr>
+                  {approvableRequests.length > 0 && <th className="leave-select-cell">{t.select}</th>}
                   <th>{t.employee}</th>
                   <th>{t.department}</th>
                   <th>{t.leaveType}</th>
@@ -441,19 +497,20 @@ export function LeaveRequestsPage({
               <tbody>
                 {scopedRequests.map((request) => (
                   <tr className={selectedRequest?.id === request.id ? "selected-row" : ""} key={request.id} onClick={() => setSelectedRequest(request)}>
+                    {approvableRequests.length > 0 && <td className="leave-select-cell" data-label={t.select}>{canApprove(user, request) && <input type="checkbox" checked={selectedRequestIds.includes(request.id)} onClick={(event) => event.stopPropagation()} onChange={() => toggleRequestSelection(request.id)} />}</td>}
                     <td data-label={t.employee}>{request.employeeName}</td>
-                    <td data-label={t.department}>{request.department}</td>
+                    <td data-label={t.department}>{translateDepartment(request.department, t)}</td>
                     <td data-label={t.leaveType}>{translateLeaveType(request.type, t)}</td>
                     <td data-label={t.dateRange}>{request.startDate} - {request.endDate}</td>
                     <td data-label={t.days}>{request.days}</td>
-                    <td data-label={t.status}><span className={`badge ${leaveStatusClassName(request.status)}`}>{translateLeaveStatus(request.status, t)}</span></td>
-                    <td data-label={t.reason}>{request.reason || t.none}</td>
+                    <td data-label={t.status}><span className={`badge leave-status-badge ${leaveStatusClassName(request.status)}`}>{translateLeaveStatus(request.status, t)}</span></td>
+                    <td data-label={t.reason}>{request.reason ? translateLeaveReason(request.reason, t) : t.none}</td>
                     <td data-label={t.attachment}>{request.attachmentName || t.none}</td>
                   </tr>
                 ))}
                 {scopedRequests.length === 0 && (
                   <tr>
-                    <td colSpan={8}>{t.noLeaveRequests}</td>
+                    <td colSpan={approvableRequests.length > 0 ? 9 : 8}>{t.noLeaveRequests}</td>
                   </tr>
                 )}
               </tbody>
@@ -478,7 +535,7 @@ export function LeaveRequestsPage({
                     <dd><button className="detail-link" type="button" onClick={() => void handleDownloadAttachment(selectedRequest)}>{selectedRequest.attachment.name}</button></dd>
                   </div>
                 )}
-                <div><dt>{t.reason}</dt><dd>{selectedRequest.reason || t.none}</dd></div>
+                <div><dt>{t.reason}</dt><dd>{selectedRequest.reason ? translateLeaveReason(selectedRequest.reason, t) : t.none}</dd></div>
               </dl>
               {canSubmitDraft(user, selectedRequest) && (
                 <div className="draft-reason-editor">

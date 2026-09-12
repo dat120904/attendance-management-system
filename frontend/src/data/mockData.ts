@@ -220,7 +220,7 @@ export const leaveRequests: LeaveRequest[] = [
     startDate: isoDate(addDays(today, 9)),
     endDate: isoDate(addDays(today, 10)),
     days: 2,
-    reason: "Demo request for review",
+    reason: "Yêu cầu mẫu cần xem xét",
     attachmentName: "leave-demo.pdf",
     status: "Pending Manager",
     createdAt: today.toISOString()
@@ -235,7 +235,7 @@ export const leaveRequests: LeaveRequest[] = [
     startDate: isoDate(addDays(today, 3)),
     endDate: isoDate(addDays(today, 4)),
     days: 2,
-    reason: "Family trip",
+    reason: "Du lịch cùng gia đình",
     attachmentName: "",
     status: "Pending Manager",
     createdAt: today.toISOString()
@@ -250,7 +250,7 @@ export const leaveRequests: LeaveRequest[] = [
     startDate: isoDate(addDays(today, 1)),
     endDate: isoDate(addDays(today, 1)),
     days: 1,
-    reason: "Medical appointment",
+    reason: "Khám bệnh",
     attachmentName: "medical-note.pdf",
     status: "Pending HR",
     createdAt: addDays(today, -1).toISOString()

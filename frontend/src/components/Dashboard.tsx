@@ -1,9 +1,9 @@
 import { useEffect, useMemo, useState } from "react";
 import { dashboardData } from "../data/mockData";
-import type { Translation } from "../i18n";
+import type { Language, Translation } from "../i18n";
 import { translateRole } from "../utils/localize";
-import type { AppPage, AttendanceLog, AttendanceSession, DashboardMetric, User } from "../types";
-import { formatClockTime, formatDuration, formatSummaryDate } from "../utils/time";
+import type { AppPage, AttendanceLog, AttendanceSession, DashboardMetric, SystemSettings, User } from "../types";
+import { formatAttendanceTime, formatClockTime, formatDuration, formatSummaryDate, formatWorkDate } from "../utils/time";
 import { ClockIcon, LeaveIcon, LoginIcon, LogoutIcon, WarningIcon } from "./icons";
 
 type DashboardProps = {
@@ -11,7 +11,9 @@ type DashboardProps = {
   attendanceMessage: string;
   attendanceSession: AttendanceSession;
   isAttendanceBusy: boolean;
+  language: Language;
   logs: AttendanceLog[];
+  settings: SystemSettings;
   onCheckIn: () => void;
   onCheckOut: () => void;
   user: User;
@@ -24,7 +26,9 @@ export function Dashboard({
   attendanceMessage,
   attendanceSession,
   isAttendanceBusy,
+  language,
   logs,
+  settings,
   onCheckIn,
   onCheckOut,
   user,
@@ -32,10 +36,15 @@ export function Dashboard({
   onNavigate
 }: DashboardProps) {
   const [seconds, setSeconds] = useState(attendanceSession.elapsedSeconds);
-  const locale = t.language === "Ngôn ngữ" ? "vi-VN" : "en-US";
+  const [isPayrollIssuesOpen, setIsPayrollIssuesOpen] = useState(false);
+  const locale = language === "vi" ? "vi-VN" : "en-US";
   const today = useMemo(() => new Date(), []);
   const summaryDate = formatSummaryDate(today, locale);
   const greeting = getGreeting(today, t);
+  const schedule = settings.workSchedules[0];
+  const scheduleLabel = schedule ? formatSchedule(schedule) : "";
+  const hasSessionMetadata = Boolean(attendanceSession.checkInAt && (attendanceSession.device || attendanceSession.ipAddress || attendanceSession.location));
+  const recentLogs = logs.filter((log) => log.employeeId === user.id).slice(0, 5);
 
   useEffect(() => {
     setSeconds(attendanceSession.elapsedSeconds);
@@ -50,7 +59,7 @@ export function Dashboard({
   const metrics = useMemo<DashboardMetric[]>(() => {
     const base: DashboardMetric[] = [
       {
-        label: t.remainingLeave,
+        label: t.yourRemainingLeave,
         value: `${user.remainingLeaveDays}`,
         suffix: t.days,
         icon: "leave"
@@ -80,22 +89,30 @@ export function Dashboard({
   }, [t, user]);
 
   const roleOverview = getRoleOverview(user.role, t);
-  const actionCards = getActionCards(user.role, t);
+  const payrollIssues = getPayrollIssues(logs, t);
+  const actionCards = getActionCards(user.role, t, payrollIssues);
   const isWorking = attendanceSession.status === "working";
   const sessionAction = isWorking ? onCheckOut : onCheckIn;
   const sessionActionLabel = isAttendanceBusy ? (isWorking ? t.checkingOut : t.checkingIn) : isWorking ? t.checkOut : t.checkIn;
   const sessionStatusLabel = getSessionStatusLabel(attendanceSession.status, t);
-  const checkedInLabel = attendanceSession.checkInAt ? `${t.checkedInAtPrefix} ${formatClockTime(attendanceSession.checkInAt)}` : t.readyToStart;
+  const checkedInLabel = attendanceSession.checkInAt ? `${t.checkedInAtPrefix} ${formatClockTime(attendanceSession.checkInAt, locale)}` : t.readyToStart;
+  const checkInReminder = !isWorking ? getCheckInReminder(today, schedule, language, t) : "";
 
   return (
     <>
       <section className="content-grid" aria-label={t.dashboard}>
         <article className="hero-card">
-          <div>
+          <div className="dashboard-intro">
+            <span className="dashboard-date-label">{t.todayDate}: {summaryDate}</span>
             <h3>
               {greeting}, {user.name}.
             </h3>
             <p>{t.dashboardSummary.replace("{date}", summaryDate)}</p>
+          </div>
+
+          <div className="personal-attendance-heading">
+            <span>{t.personalAttendance}</span>
+            <p>{t.personalAttendanceDescription}</p>
           </div>
 
           <div className="session-card">
@@ -103,11 +120,15 @@ export function Dashboard({
               <span>{t.currentSession}</span>
               <strong>{isWorking || attendanceSession.status === "checked-out" ? formatDuration(seconds) : "00:00:00"}</strong>
               <p>{checkedInLabel}</p>
+              {scheduleLabel && <p className="session-schedule"><span>{t.standardWorkSchedule}</span>{scheduleLabel}</p>}
+              {checkInReminder && <p className="session-reminder">{checkInReminder}</p>}
               <div className="session-meta">
                 <span className={`session-status ${attendanceSession.status}`}>{sessionStatusLabel}</span>
-                <small>{t.device}: {attendanceSession.device}</small>
-                <small>{t.ipAddress}: {attendanceSession.ipAddress}</small>
-                <small>{t.location}: {attendanceSession.location}</small>
+                {hasSessionMetadata && <>
+                  {attendanceSession.device && <small>{t.device}: {attendanceSession.device}</small>}
+                  {attendanceSession.ipAddress && <small>{t.ipAddress}: {attendanceSession.ipAddress}</small>}
+                  {attendanceSession.location && <small>{t.location}: {attendanceSession.location}</small>}
+                </>}
               </div>
             </div>
             <button className="checkout-button" type="button" onClick={sessionAction} disabled={isAttendanceBusy}>
@@ -164,7 +185,7 @@ export function Dashboard({
 
         <div className="action-grid">
           {actionCards.map((card) => (
-            <article className="action-card" key={card.label}>
+            <article className={`action-card ${getActionCardPriority(card.label, user.role, t)}`} key={card.label}>
               <div className="action-card-top">
                 <span>{card.label}</span>
                 <MetricIcon icon={card.icon} />
@@ -172,7 +193,14 @@ export function Dashboard({
               <p>
                 <strong>{card.value}</strong> {card.suffix}
               </p>
-              <button className="action-link" type="button" onClick={() => onNavigate(getActionPage(card.label, t))}>{t.reviewNow}</button>
+              {card.helper && <small>{card.helper}</small>}
+              {card.label === t.payrollReadiness && isPayrollIssuesOpen && <ul className="action-issue-list">
+                {payrollIssues.map((issue) => <li key={issue}>{issue}</li>)}
+              </ul>}
+              {card.label === t.payrollReadiness ? <div className="action-card-links">
+                <button className="action-link" type="button" onClick={() => setIsPayrollIssuesOpen((current) => !current)}>{isPayrollIssuesOpen ? t.hideMissingItems : t.viewMissingItems}</button>
+                <button className="action-link secondary" type="button" onClick={() => onNavigate("payrollSummaries")}>{t.openPayrollSummary}</button>
+              </div> : <button className="action-link" type="button" onClick={() => onNavigate(getActionPage(card.label, t))}>{t.reviewNow}</button>}
             </article>
           ))}
         </div>
@@ -196,11 +224,11 @@ export function Dashboard({
               </tr>
             </thead>
             <tbody>
-              {logs.map((log) => (
+              {recentLogs.map((log) => (
                 <tr key={log.id}>
-                  <td data-label={t.date}>{log.date}</td>
-                  <td data-label={t.checkInColumn}>{log.checkIn}</td>
-                  <td data-label={t.checkOutColumn}>{log.checkOut}</td>
+                  <td data-label={t.date}>{formatWorkDate(log.workDate, locale)}</td>
+                  <td data-label={t.checkInColumn}>{formatAttendanceTime(log.checkIn, locale)}</td>
+                  <td data-label={t.checkOutColumn}>{formatAttendanceTime(log.checkOut, locale)}</td>
                   <td data-label={t.totalHours}>{log.totalHours}</td>
                   <td data-label={t.status}>
                     <span className={`badge ${statusClassName(log.status)}`}>{translateStatus(log.status, t)}</span>
@@ -226,6 +254,12 @@ function MetricIcon({ icon }: { icon: DashboardMetric["icon"] }) {
   if (icon === "leave") return <LeaveIcon />;
   if (icon === "warning") return <WarningIcon />;
   return <LeaveIcon />;
+}
+
+function getActionCardPriority(label: string, role: User["role"], t: Translation) {
+  if (role !== "HR") return "";
+  if (label === t.pendingLeaveRequests || label === t.attendanceExceptions) return "urgent";
+  return "attention";
 }
 
 function statusClassName(status: string) {
@@ -291,7 +325,7 @@ function getRoleOverview(role: User["role"], t: Translation) {
   };
 }
 
-function getActionCards(role: User["role"], t: Translation): DashboardMetric[] {
+function getActionCards(role: User["role"], t: Translation, payrollIssues: string[]): DashboardMetric[] {
   const personalCards: DashboardMetric[] = [
     {
       label: t.upcomingLeave,
@@ -338,8 +372,9 @@ function getActionCards(role: User["role"], t: Translation): DashboardMetric[] {
     return [
       {
         label: t.payrollReadiness,
-        value: "92%",
+        value: `${Math.max(0, 100 - payrollIssues.length * 4)}%`,
         suffix: t.ready,
+        helper: t.payrollReadinessDetail.replace("{count}", `${payrollIssues.length}`),
         icon: "clock"
       },
       {
@@ -383,4 +418,27 @@ function getActionCards(role: User["role"], t: Translation): DashboardMetric[] {
       icon: "clock"
     }
   ];
+}
+
+function getPayrollIssues(logs: AttendanceLog[], t: Translation) {
+  return logs
+    .filter((log) => log.status === "Missing Check-out" || log.adjustmentStatus === "Pending")
+    .map((log) => `${log.employeeName}: ${log.status === "Missing Check-out" ? t.missingCheckOut : t.pendingAdjustment}`);
+}
+
+function formatSchedule(schedule: SystemSettings["workSchedules"][number]) {
+  return `${schedule.startTime}-${schedule.morningEndTime} · ${schedule.afternoonStartTime}-${schedule.endTime}`;
+}
+
+function getCheckInReminder(now: Date, schedule: SystemSettings["workSchedules"][number] | undefined, language: Language, t: Translation) {
+  if (!schedule || !schedule.workDays.includes(now.getDay())) return "";
+  const [hours, minutes] = schedule.startTime.split(":").map(Number);
+  const remainingMinutes = hours * 60 + minutes - (now.getHours() * 60 + now.getMinutes());
+  if (remainingMinutes <= 0) return "";
+  const remainingHours = Math.floor(remainingMinutes / 60);
+  const remainingMins = remainingMinutes % 60;
+  const duration = language === "vi"
+    ? `${remainingHours ? `${remainingHours} giờ ` : ""}${remainingMins} phút`
+    : `${remainingHours ? `${remainingHours} hour${remainingHours === 1 ? "" : "s"} ` : ""}${remainingMins} minute${remainingMins === 1 ? "" : "s"}`;
+  return t.checkInAvailableIn.replace("{time}", duration.trim());
 }

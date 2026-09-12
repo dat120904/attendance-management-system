@@ -44,7 +44,7 @@ export function Topbar({ activePage, attendanceSession, isAttendanceBusy, langua
         <div className="notification-menu-wrap">
           <button className={`icon-button notification-trigger ${isNotificationsOpen ? "active" : ""}`} type="button" aria-label={t.notifications} aria-expanded={isNotificationsOpen} onClick={() => { setIsNotificationsOpen((current) => !current); setIsAccountOpen(false); }}>
             <BellIcon />
-            {unreadCount > 0 && <span className="notification-dot" aria-hidden="true" />}
+            {unreadCount > 0 && <span className="notification-dot" aria-hidden="true">{unreadCount > 9 ? "9+" : unreadCount}</span>}
           </button>
           {isNotificationsOpen && (
             <div className="notification-dropdown" role="menu" aria-label={t.notifications}>
@@ -62,7 +62,7 @@ export function Topbar({ activePage, attendanceSession, isAttendanceBusy, langua
                     </div>
                     <p>{translateNotificationMessage(notification, t, user.name)}</p>
                     <div className="notification-meta">
-                      <small>{new Date(notification.createdAt).toLocaleString()}</small>
+                      <small>{new Date(notification.createdAt).toLocaleString(language === "vi" ? "vi-VN" : "en-US")}</small>
                       <small>{translateEmailStatus(notification.emailStatus, t)}</small>
                     </div>
                     <div className="notification-actions">
@@ -75,10 +75,10 @@ export function Topbar({ activePage, attendanceSession, isAttendanceBusy, langua
             </div>
           )}
         </div>
-        <button className="checkin-button" type="button" onClick={onAttendanceAction} disabled={isAttendanceBusy}>
+        {activePage !== "dashboard" && <button className="checkin-button" type="button" onClick={onAttendanceAction} disabled={isAttendanceBusy}>
           <LoginIcon />
           {actionLabel}
-        </button>
+        </button>}
         <div className="account-menu-wrap">
           <button className="avatar" type="button" aria-label={`${user.name} ${t.accountMenu}`} aria-expanded={isAccountOpen} onClick={() => { setIsAccountOpen((current) => !current); setIsNotificationsOpen(false); }}>
             <span aria-hidden="true">{user.name.charAt(0)}</span>
