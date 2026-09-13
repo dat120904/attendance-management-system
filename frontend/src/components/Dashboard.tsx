@@ -95,32 +95,57 @@ export function Dashboard({
   const sessionAction = isWorking ? onCheckOut : onCheckIn;
   const sessionActionLabel = isAttendanceBusy ? (isWorking ? t.checkingOut : t.checkingIn) : isWorking ? t.checkOut : t.checkIn;
   const sessionStatusLabel = getSessionStatusLabel(attendanceSession.status, t);
-  const checkedInLabel = attendanceSession.checkInAt ? `${t.checkedInAtPrefix} ${formatClockTime(attendanceSession.checkInAt, locale)}` : t.readyToStart;
+  const checkedInLabel = attendanceSession.checkInAt ? `${t.checkedInAtPrefix} ${formatClockTime(attendanceSession.checkInAt, locale)}` : "";
   const checkInReminder = !isWorking ? getCheckInReminder(today, schedule, language, t) : "";
 
   return (
     <>
       <section className="content-grid" aria-label={t.dashboard}>
         <article className="hero-card">
-          <div className="dashboard-intro">
-            <span className="dashboard-date-label">{t.todayDate}: {summaryDate}</span>
-            <h3>
-              {greeting}, {user.name}.
-            </h3>
-            <p>{t.dashboardSummary.replace("{date}", summaryDate)}</p>
-          </div>
+          <div className="dashboard-hero-heading">
+            <div className="dashboard-intro">
+              <span className="dashboard-date-label">{t.todayDate}: {summaryDate}</span>
+              <h3>
+                {greeting}, {user.name}.
+              </h3>
+            </div>
 
-          <div className="personal-attendance-heading">
-            <span>{t.personalAttendance}</span>
-            <p>{t.personalAttendanceDescription}</p>
+            <aside className="stats-column" aria-label={t.quickStats}>
+              {metrics.map((metric) => (
+                <article className="stat-card" key={metric.label}>
+                  <div className="stat-label">
+                    <MetricIcon icon={metric.icon} />
+                    {metric.label}
+                  </div>
+                  {metric.icon === "holiday" ? (
+                    <>
+                      <h4>{metric.value}</h4>
+                      <p>{metric.helper}</p>
+                    </>
+                  ) : (
+                    <>
+                      <p>
+                        <strong>{metric.value}</strong> {metric.suffix}
+                      </p>
+                      {metric.helper && <small>{metric.helper}</small>}
+                    </>
+                  )}
+                  {typeof metric.progress === "number" && (
+                    <div className="progress" aria-label={`${metric.progress}%`}>
+                      <span style={{ width: `${metric.progress}%` }} />
+                    </div>
+                  )}
+                </article>
+              ))}
+            </aside>
           </div>
 
           <div className="session-card">
             <div className="session-copy">
               <span>{t.currentSession}</span>
               <strong>{isWorking || attendanceSession.status === "checked-out" ? formatDuration(seconds) : "00:00:00"}</strong>
-              <p>{checkedInLabel}</p>
-              {scheduleLabel && <p className="session-schedule"><span>{t.standardWorkSchedule}</span>{scheduleLabel}</p>}
+              {checkedInLabel && <p>{checkedInLabel}</p>}
+
               {checkInReminder && <p className="session-reminder">{checkInReminder}</p>}
               <div className="session-meta">
                 <span className={`session-status ${attendanceSession.status}`}>{sessionStatusLabel}</span>
@@ -131,6 +156,12 @@ export function Dashboard({
                 </>}
               </div>
             </div>
+            {scheduleLabel && (
+              <div className="session-schedule">
+                <span>{t.standardWorkSchedule}</span>
+                <strong>{scheduleLabel}</strong>
+              </div>
+            )}
             <button className="checkout-button" type="button" onClick={sessionAction} disabled={isAttendanceBusy}>
               {isWorking ? <LogoutIcon /> : <LoginIcon />}
               {sessionActionLabel}
@@ -143,34 +174,6 @@ export function Dashboard({
           )}
         </article>
 
-        <aside className="stats-column" aria-label={t.quickStats}>
-          {metrics.map((metric) => (
-            <article className="stat-card" key={metric.label}>
-              <div className="stat-label">
-                <MetricIcon icon={metric.icon} />
-                {metric.label}
-              </div>
-              {metric.icon === "holiday" ? (
-                <>
-                  <h4>{metric.value}</h4>
-                  <p>{metric.helper}</p>
-                </>
-              ) : (
-                <>
-                  <p>
-                    <strong>{metric.value}</strong> {metric.suffix}
-                  </p>
-                  {metric.helper && <small>{metric.helper}</small>}
-                </>
-              )}
-              {typeof metric.progress === "number" && (
-                <div className="progress" aria-label={`${metric.progress}%`}>
-                  <span style={{ width: `${metric.progress}%` }} />
-                </div>
-              )}
-            </article>
-          ))}
-        </aside>
       </section>
 
       <section className={`dashboard-panels dashboard-panels-${user.role.toLowerCase()}`} aria-label={t.roleOverview}>
@@ -194,11 +197,11 @@ export function Dashboard({
                 <strong>{card.value}</strong> {card.suffix}
               </p>
               {card.helper && <small>{card.helper}</small>}
-              {card.label === t.payrollReadiness && isPayrollIssuesOpen && <ul className="action-issue-list">
+              {card.label === t.payrollReadiness && payrollIssues.length > 0 && isPayrollIssuesOpen && <ul className="action-issue-list">
                 {payrollIssues.map((issue) => <li key={issue}>{issue}</li>)}
               </ul>}
               {card.label === t.payrollReadiness ? <div className="action-card-links">
-                <button className="action-link" type="button" onClick={() => setIsPayrollIssuesOpen((current) => !current)}>{isPayrollIssuesOpen ? t.hideMissingItems : t.viewMissingItems}</button>
+                {payrollIssues.length > 0 && <button className="action-link" type="button" onClick={() => setIsPayrollIssuesOpen((current) => !current)}>{isPayrollIssuesOpen ? t.hideMissingItems : t.viewMissingItems}</button>}
                 <button className="action-link secondary" type="button" onClick={() => onNavigate("payrollSummaries")}>{t.openPayrollSummary}</button>
               </div> : <button className="action-link" type="button" onClick={() => onNavigate(getActionPage(card.label, t))}>{t.reviewNow}</button>}
             </article>
@@ -209,7 +212,7 @@ export function Dashboard({
       <section className="logs-card" aria-label={t.recentLogs}>
         <div className="section-header">
           <h3>{t.recentLogs}</h3>
-          <a href="#">{t.viewAll}</a>
+          <button className="action-link" type="button" onClick={() => onNavigate("attendanceLogs")}>{t.viewAll}</button>
         </div>
 
         <div className="table-wrap">
@@ -374,7 +377,7 @@ function getActionCards(role: User["role"], t: Translation, payrollIssues: strin
         label: t.payrollReadiness,
         value: `${Math.max(0, 100 - payrollIssues.length * 4)}%`,
         suffix: t.ready,
-        helper: t.payrollReadinessDetail.replace("{count}", `${payrollIssues.length}`),
+        helper: payrollIssues.length > 0 ? t.payrollReadinessDetail.replace("{count}", `${payrollIssues.length}`) : t.payrollAllResolved,
         icon: "clock"
       },
       {
