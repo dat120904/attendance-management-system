@@ -280,7 +280,7 @@ function canEditTab(role: UserRole, tab: SettingsTab) {
 function normalizeScheduleData(settings: SystemSettings): SystemSettings {
   return {
     ...settings,
-    holidays: settings.holidays.filter((holiday) => holiday.id !== "holiday-national-day" && holiday.id !== "holiday-thanksgiving"),
+    holidays: [...settings.holidays],
     workSchedules: settings.workSchedules.slice(0, 1).map((schedule) => ({
       ...schedule,
       morningEndTime: schedule.morningEndTime || "12:00",
@@ -327,7 +327,7 @@ function normalizeSettings(settings: SystemSettings): SystemSettings {
       overtimeAfterHours: Math.max(1, Number(settings.attendancePolicy.overtimeAfterHours) || 8)
     },
     leavePolicy: { ...settings.leavePolicy, defaultAnnualLeaveDays: Math.max(0, Math.floor(settings.leavePolicy.defaultAnnualLeaveDays)) },
-    holidays: settings.holidays.filter((holiday) => holiday.id !== "holiday-national-day" && holiday.id !== "holiday-thanksgiving"),
+    holidays: [...settings.holidays],
     workSchedules: settings.workSchedules.slice(0, 1).map((schedule) => ({ ...schedule, breakMinutes: getBreakMinutes(schedule), workDays: schedule.workDays.length ? schedule.workDays : [1, 2, 3, 4, 5] })),
     security: { ...settings.security, minPasswordLength: Math.max(6, Math.floor(settings.security.minPasswordLength)), sessionTimeoutMinutes: Math.max(15, Math.floor(settings.security.sessionTimeoutMinutes)) },
     audit: { ...settings.audit, retentionDays: Math.max(30, Math.floor(settings.audit.retentionDays)) }

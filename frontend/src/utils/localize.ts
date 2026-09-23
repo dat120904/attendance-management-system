@@ -58,7 +58,6 @@ export function translateLeavePolicy(policy: string, t: Translation) {
 export function translateLeaveReason(reason: string, t: Translation) {
   const language = t.reason === "Reason" ? "en" : "vi";
   const samples: Array<{ en: string; vi: string }> = [
-    { en: "Demo request for review", vi: "Yêu cầu mẫu cần xem xét" },
     { en: "Family trip", vi: "Du lịch cùng gia đình" },
     { en: "Medical appointment", vi: "Khám bệnh" }
   ];

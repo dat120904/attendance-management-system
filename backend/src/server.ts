@@ -1,11 +1,18 @@
+import { randomUUID } from "node:crypto";
+import type { AttendanceLog as PrismaAttendanceLog, HelpArticle as PrismaHelpArticle, LeaveAttachment as PrismaLeaveAttachment, LeaveRequest as PrismaLeaveRequest, Notification as PrismaNotification, PayrollPeriod as PrismaPayrollPeriod, PayrollSummaryRow as PrismaPayrollSummaryRow, PayrollVersion as PrismaPayrollVersion, SupportTicket as PrismaSupportTicket, User as PrismaUser } from "@prisma/client";
 import { createReadStream, existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { createServer, IncomingMessage, ServerResponse } from "node:http";
 import { join, resolve } from "node:path";
-import { activeAttendanceSessions, attendanceLogs, auditLogs, helpArticles, leaveRequests, leaveWorkflowConfig, notifications, payrollPeriods, supportTickets, systemSettings, users } from "./data.js";
+import { leaveWorkflowConfig, systemSettings } from "./data.js";
 import type { AttendanceLog, AppNotification, HelpArticle, LeaveAttachment, LeaveRequest, LeaveType, LeaveWorkflowConfig, PayrollPeriod, PayrollSummaryRow, SystemSettings, User } from "./types.js";
-import { getUserByToken, login, logout, publicUser, registerAccount, setUserPassword } from "./auth.js";
+import { databaseUserToApi, getUserByToken, login, logout, publicUser, registerAccount, requestPasswordReset, resetPasswordWithToken } from "./auth.js";
 import type { UserRole } from "./types.js";
 import { openApiSpec, renderApiDocs } from "./apiDocs.js";
+import { hashPassword, verifyPassword, verifyPin } from "./security.js";
+import { prisma } from "./db.js";
+import { isEmailConfigured } from "./email.js";
+import { calculateAttendance, getLocalDateContext } from "./attendance.js";
+import { getManagerAssignmentError, isActiveManager, normalizeManagerId } from "./managerAssignment.js";
 
 const port = Number(process.env.PORT ?? 4000);
 const allowedOrigins = (process.env.ALLOWED_ORIGINS ?? process.env.FRONTEND_URL ?? "http://localhost:5173")
@@ -14,6 +21,10 @@ const allowedOrigins = (process.env.ALLOWED_ORIGINS ?? process.env.FRONTEND_URL 
   .filter(Boolean);
 const uploadRoot = resolve(process.cwd(), "uploads", "leave-attachments");
 const maxAttachmentBytes = 10 * 1024 * 1024;
+const quickAttendanceAttempts = new Map<string, { failures: number; windowStartedAt: number; blockedUntil: number }>();
+const passwordResetAttempts = new Map<string, { count: number; windowStartedAt: number }>();
+const quickAttendanceWindowMs = 10 * 60 * 1000;
+const quickAttendanceMaxFailures = 5;
 
 const server = createServer(async (request, response) => {
   setCorsHeaders(response, request);
@@ -41,9 +52,23 @@ const server = createServer(async (request, response) => {
       return;
     }
 
+    if (request.method === "GET" && request.url === "/api/attendance/quick-users") {
+      const quickUsers = await prisma.user.findMany({
+        where: { locked: false, employmentStatus: "ACTIVE", phone: { not: null }, pinHash: { not: null } },
+        select: { id: true, name: true, employeeCode: true, role: true }
+      });
+      const activeSessions = await prisma.attendanceSession.findMany({ select: { employeeId: true } });
+      const activeEmployeeIds = new Set(activeSessions.map((session) => session.employeeId));
+      sendJson(response, 200, { users: quickUsers.map((user) => ({ id: user.id, name: user.name, employeeCode: user.employeeCode ?? "", role: databaseRoleToApiRole(user.role), attendanceStatus: activeEmployeeIds.has(user.id) ? "working" : "not-started" })) });
+      return;
+    }
+    if (request.method === "POST" && (request.url === "/api/attendance/quick-check-in" || request.url === "/api/attendance/quick-check-out")) {
+      await handleQuickAttendance(request, response, request.url.endsWith("check-in") ? "check-in" : "check-out");
+      return;
+    }
     if (request.method === "POST" && request.url === "/api/auth/login") {
       const body = await readJsonBody<{ email?: string; password?: string }>(request);
-      const result = login(body.email ?? "", body.password ?? "");
+      const result = await login(body.email ?? "", body.password ?? "");
 
       if ("error" in result) {
         sendJson(response, result.status ?? 401, { error: result.error });
@@ -56,23 +81,25 @@ const server = createServer(async (request, response) => {
 
     if (request.method === "POST" && request.url === "/api/auth/logout") {
       const token = getBearerToken(request);
-      if (token) logout(token);
+      if (token) await logout(token);
       sendJson(response, 200, { ok: true });
       return;
     }
 
     if (request.method === "POST" && request.url === "/api/auth/register") {
       const body = await readJsonBody<{ name?: string; email?: string; role?: UserRole; department?: string; password?: string; confirmPassword?: string }>(request);
+      if (!systemSettings.security.allowSelfRegistration) { sendJson(response, 403, { error: "Self-registration is disabled" }); return; }
+      if (body.role && body.role !== "Employee") { sendJson(response, 403, { error: "Elevated roles must be assigned by HR or Admin" }); return; }
       const validationError = validateRegisterBody(body);
       if (validationError) {
         sendJson(response, 400, { error: validationError });
         return;
       }
 
-      const result = registerAccount({
+      const result = await registerAccount({
         name: body.name ?? "",
         email: body.email ?? "",
-        role: body.role ?? "Employee",
+        role: "Employee",
         department: body.department ?? roleDepartment(body.role ?? "Employee"),
         password: body.password ?? ""
       });
@@ -87,240 +114,218 @@ const server = createServer(async (request, response) => {
     }
 
     if (request.method === "POST" && request.url === "/api/auth/forgot-password") {
-      sendJson(response, 200, { ok: true, message: "Reset link generated for demo flow." });
+      const body = await readJsonBody<{ email?: string }>(request);
+      const email = body.email?.trim().toLowerCase() ?? "";
+      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) { sendJson(response, 400, { error: "Enter a valid email address" }); return; }
+      if (!isEmailConfigured()) { sendJson(response, 503, { error: "Password reset email is not configured" }); return; }
+      const attemptKey = `${getRequestIp(request)}:${email}`;
+      const now = Date.now();
+      const current = passwordResetAttempts.get(attemptKey);
+      if (current && now - current.windowStartedAt < 15 * 60_000 && current.count >= 3) { sendJson(response, 429, { error: "Too many reset requests. Try again later." }); return; }
+      passwordResetAttempts.set(attemptKey, !current || now - current.windowStartedAt >= 15 * 60_000 ? { count: 1, windowStartedAt: now } : { ...current, count: current.count + 1 });
+      await requestPasswordReset(email);
+      sendJson(response, 200, { ok: true, message: "If an account uses that email, a reset link has been sent." });
       return;
     }
 
     if (request.method === "POST" && request.url === "/api/auth/reset-password") {
-      sendJson(response, 200, { ok: true });
+      const body = await readJsonBody<{ token?: string; password?: string; confirmPassword?: string }>(request);
+      const token = body.token?.trim() ?? "";
+      const password = body.password ?? "";
+      if (!token || token.length < 32) { sendJson(response, 400, { error: "Invalid or expired reset link" }); return; }
+      if (password.length < systemSettings.security.minPasswordLength) { sendJson(response, 400, { error: `Password must be at least ${systemSettings.security.minPasswordLength} characters` }); return; }
+      if (password !== body.confirmPassword) { sendJson(response, 400, { error: "Passwords do not match" }); return; }
+      const reset = await resetPasswordWithToken(token, password);
+      if (!reset) { sendJson(response, 400, { error: "Invalid or expired reset link" }); return; }
+      sendJson(response, 200, { ok: true, message: "Password updated. You can now sign in." });
       return;
     }
-
+    if (request.method === "POST" && request.url === "/api/auth/change-password") {
+      const user = await requireUser(request, response);
+      if (!user) return;
+      const body = await readJsonBody<{ currentPassword?: string; newPassword?: string; confirmPassword?: string }>(request);
+      const currentPassword = body.currentPassword ?? "";
+      const newPassword = body.newPassword ?? "";
+      if (newPassword.length < systemSettings.security.minPasswordLength) { sendJson(response, 400, { error: `Password must be at least ${systemSettings.security.minPasswordLength} characters` }); return; }
+      if (newPassword !== body.confirmPassword) { sendJson(response, 400, { error: "Passwords do not match" }); return; }
+      const record = await prisma.user.findUnique({ where: { id: user.id }, select: { passwordHash: true } });
+      if (!record?.passwordHash || !verifyPassword(currentPassword, record.passwordHash)) { sendJson(response, 401, { error: "Current password is incorrect" }); return; }
+      const currentToken = getBearerToken(request);
+      await prisma.$transaction(async (transaction) => {
+        await transaction.user.update({ where: { id: user.id }, data: { passwordHash: hashPassword(newPassword) } });
+        await transaction.authSession.deleteMany({ where: { userId: user.id, ...(currentToken ? { token: { not: currentToken } } : {}) } });
+        await transaction.auditLog.create({ data: { id: randomUUID(), actorId: user.id, action: "auth.password_changed", targetId: user.id, success: true } });
+      });
+      sendJson(response, 200, { ok: true, message: "Password changed successfully" });
+      return;
+    }
     if (request.method === "GET" && request.url === "/api/me") {
-      const user = requireUser(request, response);
+      const user = await requireUser(request, response);
       if (!user) return;
       sendJson(response, 200, { user });
       return;
     }
 
     if (request.method === "GET" && request.url === "/api/dashboard") {
-      const user = requireUser(request, response);
+      const user = await requireUser(request, response);
       if (!user) return;
-
-      const logs = user.role === "Employee" ? attendanceLogs.filter((log) => log.employeeId === user.id) : attendanceLogs;
-      const today = new Date();
-      const nextThanksgiving = getNextThanksgiving(today);
-
+      const now = new Date();
+      const weekStart = new Date(now);
+      const day = weekStart.getDay();
+      weekStart.setDate(weekStart.getDate() - (day === 0 ? 6 : day - 1));
+      weekStart.setHours(0, 0, 0, 0);
+      const [records, activeSession, weeklyLogs, nextHoliday, unresolvedCount, latestPayroll] = await Promise.all([
+        prisma.attendanceLog.findMany({ where: user.role === "Employee" ? { employeeId: user.id } : {}, include: { employee: true }, orderBy: { workDate: "desc" }, take: 50 }),
+        prisma.attendanceSession.findUnique({ where: { employeeId: user.id } }),
+        prisma.attendanceLog.findMany({ where: { employeeId: user.id, workDate: { gte: weekStart, lte: now } }, select: { totalMinutes: true } }),
+        prisma.holiday.findFirst({ where: { endDate: { gte: now } }, orderBy: { startDate: "asc" } }),
+        prisma.attendanceLog.count({ where: { OR: [{ status: "MISSING_CHECK_OUT" }, { adjustmentStatus: "PENDING" }] } }),
+        prisma.payrollPeriod.findFirst({ orderBy: { startDate: "desc" }, select: { warnings: true, rows: { select: { id: true } } } })
+      ]);
+      const weeklyMinutes = weeklyLogs.reduce((sum, log) => sum + log.totalMinutes, 0);
+      const payrollReadiness = latestPayroll ? `${Math.max(0, Math.round((1 - latestPayroll.warnings.length / Math.max(1, latestPayroll.rows.length)) * 100))}% ready` : "Not calculated";
       sendJson(response, 200, {
         greeting: "Good morning",
-        summaryDate: formatSummaryDate(today),
-        checkedInAt: "08:30 AM",
-        sessionSeconds: 13515,
-        weeklyHours: 32.5,
+        summaryDate: formatSummaryDate(now),
+        session: activeSession ? databaseAttendanceSessionToApi(activeSession) : null,
+        sessionSeconds: activeSession ? Math.max(0, Math.floor((now.getTime() - activeSession.checkInAt.getTime()) / 1000)) : 0,
+        weeklyHours: Math.round((weeklyMinutes / 60) * 100) / 100,
         weeklyTarget: 40,
         remainingLeaveDays: user.remainingLeaveDays,
-        nextHoliday: {
-          name: "Thanksgiving",
-          dateRange: nextThanksgiving.toISOString()
-        },
-        logs,
-        managerAlerts: canViewTeamDashboard(user.role) ? ["3 late arrivals this week", "1 missing check-out needs review"] : [],
-        payrollReadiness: user.role === "Payroll" || user.role === "Admin" ? "92% ready" : null
+        nextHoliday: nextHoliday ? { name: nextHoliday.name, dateRange: `${nextHoliday.startDate.toISOString().slice(0, 10)} - ${nextHoliday.endDate.toISOString().slice(0, 10)}` } : null,
+        logs: records.map(databaseAttendanceLogToApi),
+        managerAlerts: canViewTeamDashboard(user.role) && unresolvedCount > 0 ? [`${unresolvedCount} unresolved attendance item(s)`] : [],
+        payrollReadiness: user.role === "Payroll" || user.role === "Admin" ? payrollReadiness : null
       });
       return;
     }
-
     if (request.method === "POST" && request.url === "/api/attendance/check-in") {
-      const user = requireUser(request, response);
+      const user = await requireUser(request, response);
       if (!user) return;
-
       const scheduleError = getCheckInRestriction(new Date(), user);
-      if (scheduleError) {
-        sendJson(response, 409, { error: scheduleError });
-        return;
-      }
-
-      const currentSession = activeAttendanceSessions.get(user.id);
-      if (currentSession) {
-        sendJson(response, 409, { error: "Active attendance session already exists", session: currentSession });
-        return;
-      }
-
-      const session = {
-        id: `session-${Date.now()}`,
-        employeeId: user.id,
-        checkInAt: new Date().toISOString(),
-        device: request.headers["user-agent"] ?? "Browser device",
-        ipAddress: request.socket.remoteAddress ?? "Office network",
-        location: "Headquarters"
-      };
-
-      activeAttendanceSessions.set(user.id, session);
-      sendJson(response, 201, { session });
+      if (scheduleError) { sendJson(response, 409, { error: scheduleError }); return; }
+      const currentSession = await prisma.attendanceSession.findUnique({ where: { employeeId: user.id } });
+      if (currentSession) { sendJson(response, 409, { error: "Active attendance session already exists", session: databaseAttendanceSessionToApi(currentSession) }); return; }
+      const created = await prisma.attendanceSession.create({ data: { id: randomUUID(), employeeId: user.id, checkInAt: new Date(), device: request.headers["user-agent"] ?? "Browser device", ipAddress: getRequestIp(request), location: "Headquarters" } });
+      await addDatabaseAudit(user.id, "attendance.checked-in", created.id);
+      sendJson(response, 201, { session: databaseAttendanceSessionToApi(created) });
       return;
     }
 
     if (request.method === "POST" && request.url === "/api/attendance/check-out") {
-      const user = requireUser(request, response);
+      const user = await requireUser(request, response);
       if (!user) return;
-
-      const session = activeAttendanceSessions.get(user.id);
-      if (!session) {
-        sendJson(response, 400, { error: "Check-in is required before check-out" });
-        return;
-      }
-
-      const checkInAt = new Date(session.checkInAt);
+      const session = await prisma.attendanceSession.findUnique({ where: { employeeId: user.id } });
+      if (!session) { sendJson(response, 400, { error: "Check-in is required before check-out" }); return; }
       const checkOutAt = new Date();
-      const totalSeconds = Math.max(0, Math.floor((checkOutAt.getTime() - checkInAt.getTime()) / 1000));
-      const log = {
-        id: `log-${Date.now()}`,
-        employeeId: user.id,
-        employeeName: user.name,
-        department: roleDepartment(user.role),
-        managerId: "u-admin",
-        workDate: checkOutAt.toISOString().slice(0, 10),
-        date: formatLogDate(checkOutAt),
-        checkIn: formatClockTime(checkInAt),
-        checkOut: formatClockTime(checkOutAt),
-        totalHours: formatTotalHours(totalSeconds),
-        overtime: "0h 0m",
-        status: "On Time" as const,
-        adjustmentStatus: "None" as const,
-        payrollLocked: false
-      };
-
-      attendanceLogs.unshift(log);
-      activeAttendanceSessions.delete(user.id);
-      sendJson(response, 200, { log });
+      const attendance = calculateAttendance(session.checkInAt, checkOutAt, systemSettings);
+      const [record] = await prisma.$transaction([
+        prisma.attendanceLog.create({ data: { id: randomUUID(), employeeId: user.id, managerId: user.managerId || null, workDate: dateOnlyValue(attendance.workDate), checkInAt: session.checkInAt, checkOutAt, totalMinutes: attendance.totalMinutes, overtimeMinutes: attendance.overtimeMinutes, status: attendance.status, adjustmentStatus: "NONE", payrollLocked: false }, include: { employee: true } }),
+        prisma.attendanceSession.delete({ where: { employeeId: user.id } })
+      ]);
+      await addDatabaseAudit(user.id, "attendance.checked-out", record.id);
+      sendJson(response, 200, { log: databaseAttendanceLogToApi(record) });
       return;
     }
-
-
     if (request.method === "GET" && request.url === "/api/employees") {
-      const user = requireUser(request, response);
+      const user = await requireUser(request, response);
       if (!user) return;
       if (!canViewEmployees(user.role)) {
         sendJson(response, 403, { error: "Forbidden" });
         return;
       }
 
-      sendJson(response, 200, { users: getRoleScopedEmployees(users, user).map(publicEmployee) });
+      const databaseUsers = (await prisma.user.findMany()).map(databaseUserToApi);
+      sendJson(response, 200, { users: getRoleScopedEmployees(databaseUsers, user).map(publicEmployee) });
       return;
     }
 
     if (request.method === "POST" && request.url === "/api/employees") {
-      const user = requireUser(request, response);
+      const user = await requireUser(request, response);
       if (!user) return;
-      if (!canManageEmployees(user.role)) {
-        sendJson(response, 403, { error: "Forbidden" });
-        return;
-      }
+      if (!canManageEmployees(user.role)) { sendJson(response, 403, { error: "Forbidden" }); return; }
 
       const body = await readJsonBody<Partial<User> & { password?: string }>(request);
       const validationError = validateEmployeeBody(body);
-      if (validationError) {
-        sendJson(response, 400, { error: validationError });
-        return;
-      }
-
-      if (users.some((item) => item.email.toLowerCase() === body.email?.trim().toLowerCase())) {
-        sendJson(response, 409, { error: "Email already exists" });
-        return;
-      }
+      if (validationError) { sendJson(response, 400, { error: validationError }); return; }
+      const normalizedEmail = body.email?.trim().toLowerCase() ?? "";
+      const existing = await prisma.user.findFirst({ where: { OR: [{ email: normalizedEmail }, ...(body.employeeCode?.trim() ? [{ employeeCode: body.employeeCode.trim() }] : [])] }, select: { email: true, employeeCode: true } });
+      if (existing?.email === normalizedEmail) { sendJson(response, 409, { error: "Email already exists" }); return; }
+      if (existing?.employeeCode && existing.employeeCode === body.employeeCode?.trim()) { sendJson(response, 409, { error: "Employee code already exists" }); return; }
 
       const employee = buildEmployee(body);
-      users.push(employee);
-      setUserPassword(employee.email, body.password || "password");
-      addAudit(user.id, "employee.created", employee.id);
-      sendJson(response, 201, { user: publicEmployee(employee) });
+      const managerError = await validateManagerAssignment(employee.managerId, employee.id);
+      if (managerError) { sendJson(response, 400, { error: managerError }); return; }
+      const record = await prisma.user.create({ data: { id: employee.id, ...employeeDatabaseData(employee), passwordHash: hashPassword(body.password || "password") } });
+      await addDatabaseAudit(user.id, "employee.created", record.id);
+      sendJson(response, 201, { user: publicEmployee(databaseUserToApi(record)) });
       return;
     }
 
     if (request.method === "PUT" && request.url?.match(/^\/api\/employees\/[^/]+$/)) {
-      const user = requireUser(request, response);
+      const user = await requireUser(request, response);
       if (!user) return;
-      if (!canManageEmployees(user.role)) {
-        sendJson(response, 403, { error: "Forbidden" });
-        return;
-      }
+      if (!canManageEmployees(user.role)) { sendJson(response, 403, { error: "Forbidden" }); return; }
 
       const employeeId = request.url.split("/")[3];
-      const employee = users.find((item) => item.id === employeeId);
-      if (!employee) {
-        sendJson(response, 404, { error: "Employee not found" });
-        return;
-      }
-
+      const record = await prisma.user.findUnique({ where: { id: employeeId } });
+      if (!record) { sendJson(response, 404, { error: "Employee not found" }); return; }
+      const employee = databaseUserToApi(record);
       const body = await readJsonBody<Partial<User>>(request);
       const validationError = validateEmployeeBody({ ...employee, ...body });
-      if (validationError) {
-        sendJson(response, 400, { error: validationError });
-        return;
-      }
+      if (validationError) { sendJson(response, 400, { error: validationError }); return; }
       const nextEmail = body.email?.trim().toLowerCase();
-      if (nextEmail && users.some((item) => item.id !== employee.id && item.email.toLowerCase() === nextEmail)) {
-        sendJson(response, 409, { error: "Email already exists" });
-        return;
+      if (nextEmail) {
+        const duplicate = await prisma.user.findFirst({ where: { email: nextEmail, id: { not: employeeId } }, select: { id: true } });
+        if (duplicate) { sendJson(response, 409, { error: "Email already exists" }); return; }
+      }
+      if (body.employeeCode?.trim()) {
+        const duplicate = await prisma.user.findFirst({ where: { employeeCode: body.employeeCode.trim(), id: { not: employeeId } }, select: { id: true } });
+        if (duplicate) { sendJson(response, 409, { error: "Employee code already exists" }); return; }
       }
 
       updateEmployee(employee, body);
-      addAudit(user.id, "employee.updated", employee.id);
-      sendJson(response, 200, { user: publicEmployee(employee) });
+      const managerError = await validateManagerAssignment(employee.managerId, employee.id);
+      if (managerError) { sendJson(response, 400, { error: managerError }); return; }
+      const updated = await prisma.user.update({ where: { id: employeeId }, data: employeeDatabaseData(employee) });
+      await addDatabaseAudit(user.id, "employee.updated", employeeId);
+      sendJson(response, 200, { user: publicEmployee(databaseUserToApi(updated)) });
       return;
     }
 
     if (request.method === "POST" && request.url?.match(/^\/api\/employees\/[^/]+\/lock$/)) {
-      const user = requireUser(request, response);
+      const user = await requireUser(request, response);
       if (!user) return;
-      if (!canManageEmployees(user.role)) {
-        sendJson(response, 403, { error: "Forbidden" });
-        return;
-      }
-
+      if (!canManageEmployees(user.role)) { sendJson(response, 403, { error: "Forbidden" }); return; }
       const employeeId = request.url.split("/")[3];
-      if (employeeId === user.id) {
-        sendJson(response, 409, { error: "You cannot lock your own account" });
-        return;
-      }
-      const employee = users.find((item) => item.id === employeeId);
-      if (!employee) {
-        sendJson(response, 404, { error: "Employee not found" });
-        return;
-      }
+      if (employeeId === user.id) { sendJson(response, 409, { error: "You cannot lock your own account" }); return; }
+      const existing = await prisma.user.findUnique({ where: { id: employeeId }, select: { id: true } });
+      if (!existing) { sendJson(response, 404, { error: "Employee not found" }); return; }
 
       const body = await readJsonBody<{ locked?: boolean }>(request);
-      employee.locked = Boolean(body.locked);
-      employee.employmentStatus = employee.locked ? "Locked" : "Active";
-      addAudit(user.id, employee.locked ? "employee.locked" : "employee.unlocked", employee.id);
-      sendJson(response, 200, { user: publicEmployee(employee) });
+      const locked = Boolean(body.locked);
+      const updated = await prisma.user.update({ where: { id: employeeId }, data: { locked, employmentStatus: locked ? "LOCKED" : "ACTIVE" } });
+      await addDatabaseAudit(user.id, locked ? "employee.locked" : "employee.unlocked", employeeId);
+      sendJson(response, 200, { user: publicEmployee(databaseUserToApi(updated)) });
       return;
     }
 
     if (request.method === "POST" && request.url === "/api/employees/import") {
-      const user = requireUser(request, response);
+      const user = await requireUser(request, response);
       if (!user) return;
-      if (!canManageEmployees(user.role)) {
-        sendJson(response, 403, { error: "Forbidden" });
-        return;
-      }
-
+      if (!canManageEmployees(user.role)) { sendJson(response, 403, { error: "Forbidden" }); return; }
       const body = await readJsonBody<{ rows?: string }>(request);
-      const result = parseEmployeeImportRows(body.rows ?? "");
-      if (result.errors.length) {
-        sendJson(response, 400, result);
-        return;
-      }
+      const databaseUsers = (await prisma.user.findMany()).map(databaseUserToApi);
+      const result = parseEmployeeImportRows(body.rows ?? "", databaseUsers);
+      if (result.errors.length) { sendJson(response, 400, result); return; }
 
-      users.push(...result.users);
-      result.users.forEach((employee) => setUserPassword(employee.email, "password"));
-      addAudit(user.id, "employee.imported", "employees");
-      sendJson(response, 201, { users: result.users.map(publicEmployee), errors: [] });
+      const records = await prisma.$transaction(result.users.map((employee) => prisma.user.create({ data: { id: employee.id, ...employeeDatabaseData(employee), passwordHash: hashPassword("password") } })));
+      await addDatabaseAudit(user.id, "employee.imported", "employees");
+      sendJson(response, 201, { users: records.map(databaseUserToApi).map(publicEmployee), errors: [] });
       return;
     }
-
     if (request.method === "GET" && request.url?.startsWith("/api/employees/export")) {
-      const user = requireUser(request, response);
+      const user = await requireUser(request, response);
       if (!user) return;
       if (!canViewEmployees(user.role)) {
         sendJson(response, 403, { error: "Forbidden" });
@@ -333,7 +338,8 @@ const server = createServer(async (request, response) => {
         sendJson(response, 400, { error: "Unsupported export format" });
         return;
       }
-      const rows = toEmployeeExportRows(getRoleScopedEmployees(users, user));
+      const databaseUsers = (await prisma.user.findMany()).map(databaseUserToApi);
+      const rows = toEmployeeExportRows(getRoleScopedEmployees(databaseUsers, user));
       const body = format === "pdf" ? buildSimplePdf("Employee Management", rows) : buildExcelWorkbook("Employee Management", rows);
       response.writeHead(200, {
         "Content-Type": format === "pdf" ? "application/pdf" : "application/vnd.ms-excel; charset=utf-8",
@@ -344,7 +350,7 @@ const server = createServer(async (request, response) => {
     }
 
     if (request.method === "GET" && request.url === "/api/users") {
-      const user = requireUser(request, response);
+      const user = await requireUser(request, response);
       if (!user) return;
 
       if (user.role !== "Admin" && user.role !== "HR") {
@@ -352,509 +358,380 @@ const server = createServer(async (request, response) => {
         return;
       }
 
-      sendJson(response, 200, { users: users.map(publicUser) });
+      sendJson(response, 200, { users: (await prisma.user.findMany()).map(databaseUserToApi).map(publicUser) });
       return;
     }
 
     if (request.method === "GET" && request.url?.startsWith("/api/attendance/logs")) {
-      const user = requireUser(request, response);
+      const user = await requireUser(request, response);
       if (!user) return;
 
       const url = new URL(request.url, `http://${request.headers.host}`);
-      const scopedLogs = filterAttendanceLogs(getRoleScopedLogs(attendanceLogs, user), url.searchParams);
+      const databaseLogs = (await prisma.attendanceLog.findMany({ include: { employee: true }, orderBy: { workDate: "desc" } })).map(databaseAttendanceLogToApi);
+      const scopedLogs = filterAttendanceLogs(getRoleScopedLogs(databaseLogs, user), url.searchParams);
       sendJson(response, 200, { logs: scopedLogs });
       return;
     }
 
     if (request.method === "GET" && request.url?.startsWith("/api/leave-attachments/")) {
-      const user = requireUser(request, response);
+      const user = await requireUser(request, response);
       if (!user) return;
-
       const storageKey = decodeURIComponent(request.url.split("/").pop() ?? "");
-      const leaveRequest = leaveRequests.find((item) => item.attachment?.storageKey === storageKey);
-      if (!leaveRequest || !getRoleScopedLeaveRequests([leaveRequest], user).length) {
-        sendJson(response, 403, { error: "Forbidden" });
-        return;
-      }
-
+      const attachmentRecord = await prisma.leaveAttachment.findFirst({ where: { storageKey }, include: { leaveRequest: { include: { employee: true, attachment: true } } } });
+      const requestItem = attachmentRecord ? databaseLeaveRequestToApi(attachmentRecord.leaveRequest) : null;
+      if (!attachmentRecord || !requestItem || !getRoleScopedLeaveRequests([requestItem], user).length) { sendJson(response, 403, { error: "Forbidden" }); return; }
       const filePath = resolve(uploadRoot, storageKey);
-      if (!filePath.startsWith(uploadRoot) || !existsSync(filePath)) {
-        sendJson(response, 404, { error: "Attachment not found" });
-        return;
-      }
-
-      response.writeHead(200, {
-        "Content-Type": leaveRequest.attachment?.mimeType ?? "application/octet-stream",
-        "Content-Disposition": `attachment; filename="${encodeURIComponent(leaveRequest.attachment?.name ?? "attachment")}"`
-      });
+      if (!filePath.startsWith(uploadRoot) || !existsSync(filePath)) { sendJson(response, 404, { error: "Attachment not found" }); return; }
+      response.writeHead(200, { "Content-Type": attachmentRecord.mimeType, "Content-Disposition": `attachment; filename="${encodeURIComponent(attachmentRecord.name)}"` });
       createReadStream(filePath).pipe(response);
       return;
     }
 
     if (request.method === "GET" && request.url === "/api/leave-workflow") {
-      const user = requireUser(request, response);
+      const user = await requireUser(request, response);
       if (!user) return;
-
-      sendJson(response, 200, { workflow: leaveWorkflowConfig });
+      sendJson(response, 200, { workflow: await getDatabaseLeaveWorkflow() });
       return;
     }
 
     if (request.method === "PUT" && request.url === "/api/leave-workflow") {
-      const user = requireUser(request, response);
+      const user = await requireUser(request, response);
       if (!user) return;
-
-      if (user.role !== "Admin") {
-        sendJson(response, 403, { error: "Forbidden" });
-        return;
-      }
-
+      if (user.role !== "Admin") { sendJson(response, 403, { error: "Forbidden" }); return; }
       const body = await readJsonBody<Partial<LeaveWorkflowConfig>>(request);
-      updateLeaveWorkflowConfig(body);
-      addAudit(user.id, "leave.workflow.updated", "leave-workflow");
-      sendJson(response, 200, { workflow: leaveWorkflowConfig });
+      const current = await getDatabaseLeaveWorkflow();
+      const next = { ...current, ...body, defaultAnnualLeaveDays: typeof body.defaultAnnualLeaveDays === "number" ? Math.max(0, Math.floor(body.defaultAnnualLeaveDays)) : current.defaultAnnualLeaveDays };
+      const record = await prisma.leaveWorkflowConfig.upsert({ where: { id: "default" }, update: next, create: { id: "default", ...next } });
+      await addDatabaseAudit(user.id, "leave.workflow.updated", "leave-workflow");
+      sendJson(response, 200, { workflow: databaseLeaveWorkflowToApi(record) });
       return;
     }
 
     if (request.method === "GET" && request.url === "/api/leave-requests") {
-      const user = requireUser(request, response);
+      const user = await requireUser(request, response);
       if (!user) return;
-
-      sendJson(response, 200, { requests: getRoleScopedLeaveRequests(leaveRequests, user) });
+      const requests = await getDatabaseLeaveRequests();
+      sendJson(response, 200, { requests: getRoleScopedLeaveRequests(requests, user) });
       return;
     }
 
     if (request.method === "POST" && request.url === "/api/leave-requests") {
-      const user = requireUser(request, response);
+      const user = await requireUser(request, response);
       if (!user) return;
-      if (user.role === "Payroll") {
-        sendJson(response, 403, { error: "Forbidden" });
-        return;
-      }
-
-      const body = request.headers["content-type"]?.startsWith("multipart/form-data")
-        ? await readMultipartLeaveBody(request, request.headers["content-type"], user.id)
-        : await readJsonBody<{ type?: LeaveType; startDate?: string; endDate?: string; reason?: string; attachmentName?: string; attachment?: LeaveAttachment; submitMode?: "draft" | "submit" }>(request);
-      const validationError = validateLeaveRequestBody(body, user.id, undefined, body.submitMode === "draft");
-      if (validationError) {
-        sendJson(response, 400, { error: validationError });
-        return;
-      }
-
+      if (user.role === "Payroll") { sendJson(response, 403, { error: "Forbidden" }); return; }
+      const body = request.headers["content-type"]?.startsWith("multipart/form-data") ? await readMultipartLeaveBody(request, request.headers["content-type"], user.id) : await readJsonBody<{ type?: LeaveType; startDate?: string; endDate?: string; reason?: string; attachmentName?: string; attachment?: LeaveAttachment; submitMode?: "draft" | "submit" }>(request);
+      const validationError = validateLeaveRequestBody(body, user.id, undefined, true);
+      if (validationError) { sendJson(response, 400, { error: validationError }); return; }
+      const workflow = await getDatabaseLeaveWorkflow();
       const days = calculateLeaveDays(body.startDate ?? "", body.endDate ?? "");
-      if (body.submitMode !== "draft" && leaveWorkflowConfig.annualLeaveRequiresBalance && body.type === "Annual Leave" && days > user.remainingLeaveDays) {
-        sendJson(response, 409, { error: "Leave request exceeds remaining balance" });
-        return;
-      }
-
-      if (body.submitMode !== "draft" && hasLeaveOverlap(leaveRequests, user.id, body.startDate ?? "", body.endDate ?? "")) {
-        sendJson(response, 409, { error: "Leave request overlaps with an existing request" });
-        return;
-      }
-
-      const requestItem: LeaveRequest = {
-        id: `leave-${Date.now()}`,
-        employeeId: user.id,
-        employeeName: user.name,
-        department: roleDepartment(user.role),
-        managerId: user.role === "Manager" ? "u-admin" : "u-manager",
-        type: body.type ?? "Annual Leave",
-        startDate: body.startDate ?? "",
-        endDate: body.endDate ?? "",
-        days,
-        reason: body.reason?.trim() ?? "",
-        attachmentName: body.attachment?.name?.trim() || body.attachmentName?.trim() || "",
-        attachment: normalizeAttachment(body.attachment, user.id),
-        status: body.submitMode === "draft" ? "Draft" : "Pending Manager",
-        createdAt: new Date().toISOString()
-      };
-
-      leaveRequests.unshift(requestItem);
-      addAudit(user.id, requestItem.status === "Draft" ? "leave.request.draft_saved" : "leave.request.created", requestItem.id);
-      sendJson(response, 201, { request: requestItem });
+      if (body.submitMode !== "draft" && workflow.annualLeaveRequiresBalance && body.type === "Annual Leave" && days > user.remainingLeaveDays) { sendJson(response, 409, { error: "Leave request exceeds remaining balance" }); return; }
+      const existingRequests = await getDatabaseLeaveRequests();
+      if (body.submitMode !== "draft" && hasLeaveOverlap(existingRequests, user.id, body.startDate ?? "", body.endDate ?? "")) { sendJson(response, 409, { error: "Leave request overlaps with an existing request" }); return; }
+      const managerId = await resolveActiveManagerId(user.managerId);
+      if (body.submitMode !== "draft" && !managerId) { sendJson(response, 409, { error: "No active manager is assigned to this employee" }); return; }
+      const attachment = normalizeAttachment(body.attachment, user.id);
+      const record = await prisma.leaveRequest.create({ data: { id: randomUUID(), employeeId: user.id, managerId, type: leaveTypeToDatabase(body.type ?? "Annual Leave"), startDate: dateOnlyValue(body.startDate ?? ""), endDate: dateOnlyValue(body.endDate ?? ""), days, reason: body.reason?.trim() ?? "", attachmentName: attachment?.name || body.attachmentName?.trim() || null, status: body.submitMode === "draft" ? "DRAFT" : "PENDING_MANAGER", ...(attachment ? { attachment: { create: { name: attachment.name, mimeType: attachment.mimeType, size: attachment.size, url: attachment.url, storageKey: attachment.storageKey, dataUrl: attachment.dataUrl, uploadedAt: new Date(attachment.uploadedAt), uploadedBy: attachment.uploadedBy } } } : {}) }, include: { employee: true, attachment: true } });
+      await addDatabaseAudit(user.id, body.submitMode === "draft" ? "leave.request.draft_saved" : "leave.request.created", record.id);
+      sendJson(response, 201, { request: databaseLeaveRequestToApi(record) });
       return;
     }
 
     if (request.method === "PUT" && request.url?.match(/^\/api\/leave-requests\/[^/]+$/)) {
-      const user = requireUser(request, response);
+      const user = await requireUser(request, response);
       if (!user) return;
-
       const requestId = request.url.split("/")[3];
-      const requestItem = leaveRequests.find((item) => item.id === requestId);
-      if (!requestItem || requestItem.employeeId !== user.id || requestItem.status !== "Draft") {
-        sendJson(response, 403, { error: "Only the owner can edit a draft leave request" });
-        return;
-      }
-
+      const record = await prisma.leaveRequest.findUnique({ where: { id: requestId }, include: { employee: true, attachment: true } });
+      if (!record || record.employeeId !== user.id || record.status !== "DRAFT") { sendJson(response, 403, { error: "Only the owner can edit a draft leave request" }); return; }
       const body = await readJsonBody<{ reason?: string }>(request);
       const reason = body.reason?.trim() ?? "";
-      if (!reason) {
-        sendJson(response, 400, { error: "Leave request reason is required" });
-        return;
-      }
-
-      requestItem.reason = reason;
-      addAudit(user.id, "leave.request.draft_updated", requestItem.id);
-      sendJson(response, 200, { request: requestItem });
+      if (!reason) { sendJson(response, 400, { error: "Leave request reason is required" }); return; }
+      const updated = await prisma.leaveRequest.update({ where: { id: requestId }, data: { reason }, include: { employee: true, attachment: true } });
+      await addDatabaseAudit(user.id, "leave.request.draft_updated", requestId);
+      sendJson(response, 200, { request: databaseLeaveRequestToApi(updated) });
       return;
     }
 
     if (request.method === "POST" && request.url?.match(/^\/api\/leave-requests\/[^/]+\/submit$/)) {
-      const user = requireUser(request, response);
+      const user = await requireUser(request, response);
       if (!user) return;
-
       const requestId = request.url.split("/")[3];
-      const requestItem = leaveRequests.find((item) => item.id === requestId);
-      if (!requestItem || requestItem.employeeId !== user.id || requestItem.status !== "Draft") {
-        sendJson(response, 403, { error: "Forbidden" });
-        return;
-      }
-
-      const validationError = validateLeaveRequestBody(requestItem, user.id, requestItem.id, false);
-      if (validationError) {
-        sendJson(response, 400, { error: validationError });
-        return;
-      }
-
-      if (leaveWorkflowConfig.annualLeaveRequiresBalance && requestItem.type === "Annual Leave" && requestItem.days > user.remainingLeaveDays) {
-        sendJson(response, 409, { error: "Leave request exceeds remaining balance" });
-        return;
-      }
-
-      if (hasLeaveOverlap(leaveRequests, user.id, requestItem.startDate, requestItem.endDate, requestItem.id)) {
-        sendJson(response, 409, { error: "Leave request overlaps with an existing request" });
-        return;
-      }
-
-      requestItem.status = "Pending Manager";
-      addAudit(user.id, "leave.request.submitted", requestItem.id);
-      sendJson(response, 200, { request: requestItem });
+      const record = await prisma.leaveRequest.findUnique({ where: { id: requestId }, include: { employee: true, attachment: true } });
+      if (!record || record.employeeId !== user.id || record.status !== "DRAFT") { sendJson(response, 403, { error: "Forbidden" }); return; }
+      const requestItem = databaseLeaveRequestToApi(record);
+      const workflow = await getDatabaseLeaveWorkflow();
+      if (workflow.annualLeaveRequiresBalance && requestItem.type === "Annual Leave" && requestItem.days > user.remainingLeaveDays) { sendJson(response, 409, { error: "Leave request exceeds remaining balance" }); return; }
+      const allRequests = await getDatabaseLeaveRequests();
+      if (hasLeaveOverlap(allRequests, user.id, requestItem.startDate, requestItem.endDate, requestId)) { sendJson(response, 409, { error: "Leave request overlaps with an existing request" }); return; }
+      const managerId = await resolveActiveManagerId(record.employee.managerId);
+      if (!managerId) { sendJson(response, 409, { error: "No active manager is assigned to this employee" }); return; }
+      const updated = await prisma.leaveRequest.update({ where: { id: requestId }, data: { status: "PENDING_MANAGER", managerId }, include: { employee: true, attachment: true } });
+      await addDatabaseAudit(user.id, "leave.request.submitted", requestId);
+      sendJson(response, 200, { request: databaseLeaveRequestToApi(updated) });
       return;
     }
 
     if (request.method === "POST" && request.url?.match(/^\/api\/leave-requests\/[^/]+\/cancel$/)) {
-      const user = requireUser(request, response);
+      const user = await requireUser(request, response);
       if (!user) return;
-
       const requestId = request.url.split("/")[3];
-      const requestItem = leaveRequests.find((item) => item.id === requestId);
-      if (!requestItem || !canCancelLeaveRequest(user, requestItem)) {
-        sendJson(response, 403, { error: "Forbidden" });
-        return;
-      }
-
-      requestItem.status = "Cancelled";
-      addAudit(user.id, "leave.request.cancelled", requestItem.id);
-      sendJson(response, 200, { request: requestItem });
+      const record = await prisma.leaveRequest.findUnique({ where: { id: requestId }, include: { employee: true, attachment: true } });
+      const requestItem = record ? databaseLeaveRequestToApi(record) : null;
+      if (!record || !requestItem || !canCancelLeaveRequest(user, requestItem)) { sendJson(response, 403, { error: "Forbidden" }); return; }
+      const updated = await prisma.leaveRequest.update({ where: { id: requestId }, data: { status: "CANCELLED" }, include: { employee: true, attachment: true } });
+      await addDatabaseAudit(user.id, "leave.request.cancelled", requestId);
+      sendJson(response, 200, { request: databaseLeaveRequestToApi(updated) });
       return;
     }
 
     if (request.method === "POST" && request.url?.match(/^\/api\/leave-requests\/[^/]+\/(approve|reject)$/)) {
-      const user = requireUser(request, response);
+      const user = await requireUser(request, response);
       if (!user) return;
-
       const [, , , requestId, action] = request.url.split("/");
-      const requestItem = leaveRequests.find((item) => item.id === requestId);
-      if (!requestItem || !canApproveLeaveRequest(user, requestItem)) {
-        sendJson(response, 403, { error: "Forbidden" });
-        return;
-      }
-
+      const record = await prisma.leaveRequest.findUnique({ where: { id: requestId }, include: { employee: true, attachment: true } });
+      const requestItem = record ? databaseLeaveRequestToApi(record) : null;
+      if (!record || !requestItem || !canApproveLeaveRequest(user, requestItem)) { sendJson(response, 403, { error: "Forbidden" }); return; }
       if (action === "reject") {
-        requestItem.status = "Rejected";
-        addNotification({ recipientId: requestItem.employeeId, title: "Leave request rejected", message: "Your leave request was rejected.", category: "leave" });
-        addAudit(user.id, "leave.request.rejected", requestItem.id);
-        sendJson(response, 200, { request: requestItem });
+        const updated = await prisma.leaveRequest.update({ where: { id: requestId }, data: { status: "REJECTED" }, include: { employee: true, attachment: true } });
+        await addDatabaseNotification({ recipientId: record.employeeId, title: "Leave request rejected", message: "Your leave request was rejected.", category: "LEAVE" });
+        await addDatabaseAudit(user.id, "leave.request.rejected", requestId);
+        sendJson(response, 200, { request: databaseLeaveRequestToApi(updated) });
         return;
       }
-
-      if (requestItem.status === "Pending Manager" && user.role === "Manager" && leaveWorkflowConfig.requireHrApproval) {
-        requestItem.status = "Pending HR";
-        addNotification({ recipientRole: "HR", title: "Leave request needs HR approval", message: requestItem.employeeName + " has a leave request waiting for HR approval.", category: "leave" });
-        addAudit(user.id, "leave.request.manager_approved", requestItem.id);
-        sendJson(response, 200, { request: requestItem });
+      const workflow = await getDatabaseLeaveWorkflow();
+      if (record.status === "PENDING_MANAGER" && user.role === "Manager" && workflow.requireHrApproval) {
+        const updated = await prisma.leaveRequest.update({ where: { id: requestId }, data: { status: "PENDING_HR" }, include: { employee: true, attachment: true } });
+        await addDatabaseNotification({ recipientRole: "HR", title: "Leave request needs HR approval", message: `${record.employee.name} has a leave request waiting for HR approval.`, category: "LEAVE" });
+        await addDatabaseAudit(user.id, "leave.request.manager_approved", requestId);
+        sendJson(response, 200, { request: databaseLeaveRequestToApi(updated) });
         return;
       }
-
-      requestItem.status = "Approved";
-      addNotification({ recipientId: requestItem.employeeId, title: "Leave request approved", message: "Your leave request was approved.", category: "leave" });
-      const employee = users.find((item) => item.id === requestItem.employeeId);
-      if (employee && leaveWorkflowConfig.annualLeaveRequiresBalance && requestItem.type === "Annual Leave") {
-        employee.remainingLeaveDays = Math.max(0, employee.remainingLeaveDays - requestItem.days);
-      }
-
       const generatedLogs = createLeaveAttendanceLogs(requestItem);
-      attendanceLogs.unshift(...generatedLogs);
-      addAudit(user.id, "leave.request.final_approved", requestItem.id);
-      sendJson(response, 200, { request: requestItem, attendanceLog: generatedLogs[0], attendanceLogs: generatedLogs, employeeRemainingLeaveDays: employee?.remainingLeaveDays });
+      const transactionResult = await prisma.$transaction(async (transaction) => {
+        const updated = await transaction.leaveRequest.update({ where: { id: requestId }, data: { status: "APPROVED" }, include: { employee: true, attachment: true } });
+        let remainingLeaveDays = Number(record.employee.remainingLeaveDays);
+        if (workflow.annualLeaveRequiresBalance && record.type === "ANNUAL") {
+          remainingLeaveDays = Math.max(0, remainingLeaveDays - Number(record.days));
+          await transaction.user.update({ where: { id: record.employeeId }, data: { remainingLeaveDays } });
+        }
+        for (const log of generatedLogs) {
+          await transaction.attendanceLog.create({ data: { id: log.id, employeeId: log.employeeId, managerId: log.managerId || null, workDate: dateOnlyValue(log.workDate), totalMinutes: 0, overtimeMinutes: 0, status: "ON_LEAVE", adjustmentStatus: "NONE", payrollLocked: false } });
+        }
+        return { updated, remainingLeaveDays };
+      });
+      await addDatabaseNotification({ recipientId: record.employeeId, title: "Leave request approved", message: "Your leave request was approved.", category: "LEAVE" });
+      await addDatabaseAudit(user.id, "leave.request.final_approved", requestId);
+      sendJson(response, 200, { request: databaseLeaveRequestToApi(transactionResult.updated), attendanceLog: generatedLogs[0], attendanceLogs: generatedLogs, employeeRemainingLeaveDays: transactionResult.remainingLeaveDays });
       return;
     }
-
-
     if (request.method === "GET" && request.url?.startsWith("/api/notifications")) {
-      const user = requireUser(request, response);
+      const user = await requireUser(request, response);
       if (!user) return;
-      sendJson(response, 200, { notifications: getScopedNotifications(user) });
+      sendJson(response, 200, { notifications: await getDatabaseNotifications(user) });
       return;
     }
 
     if (request.method === "POST" && request.url?.match(/^\/api\/notifications\/[^/]+\/read$/)) {
-      const user = requireUser(request, response);
+      const user = await requireUser(request, response);
       if (!user) return;
-      const notification = notifications.find((item) => item.id === request.url?.split("/")[3]);
-      if (!notification || !canViewNotification(user, notification)) {
+      const notificationId = request.url.split("/")[3];
+      const record = await prisma.notification.findUnique({ where: { id: notificationId } });
+      if (!record || !canViewDatabaseNotification(user, record)) {
         sendJson(response, 404, { error: "Notification not found" });
         return;
       }
-      notification.read = true;
-      sendJson(response, 200, { notification });
+      const updated = await prisma.notification.update({ where: { id: notificationId }, data: { read: true } });
+      sendJson(response, 200, { notification: databaseNotificationToApi(updated) });
       return;
     }
 
     if (request.method === "POST" && request.url === "/api/notifications/read-all") {
-      const user = requireUser(request, response);
+      const user = await requireUser(request, response);
       if (!user) return;
-      getScopedNotifications(user).forEach((item) => { item.read = true; });
-      sendJson(response, 200, { notifications: getScopedNotifications(user) });
+      await prisma.notification.updateMany({ where: databaseNotificationScope(user), data: { read: true } });
+      sendJson(response, 200, { notifications: await getDatabaseNotifications(user) });
       return;
     }
 
     if (request.method === "POST" && request.url?.match(/^\/api\/notifications\/[^/]+\/retry-email$/)) {
-      const user = requireUser(request, response);
+      const user = await requireUser(request, response);
       if (!user) return;
       if (user.role !== "Admin" && user.role !== "HR" && user.role !== "Payroll") {
         sendJson(response, 403, { error: "Forbidden" });
         return;
       }
-      const notification = notifications.find((item) => item.id === request.url?.split("/")[3]);
-      if (!notification || !canViewNotification(user, notification)) {
+      const notificationId = request.url.split("/")[3];
+      const record = await prisma.notification.findUnique({ where: { id: notificationId } });
+      if (!record || !canViewDatabaseNotification(user, record)) {
         sendJson(response, 404, { error: "Notification not found" });
         return;
       }
-      notification.emailStatus = "Sent";
-      notification.retryCount += 1;
-      addAudit(user.id, "notification.email_retried", notification.id);
-      sendJson(response, 200, { notification });
+      const updated = await prisma.notification.update({ where: { id: notificationId }, data: { emailStatus: "SENT", retryCount: { increment: 1 } } });
+      await addDatabaseAudit(user.id, "notification.email_retried", notificationId);
+      sendJson(response, 200, { notification: databaseNotificationToApi(updated) });
       return;
     }
 
     if (request.method === "GET" && request.url?.startsWith("/api/help/articles")) {
-      const user = requireUser(request, response);
+      const user = await requireUser(request, response);
       if (!user) return;
       const url = new URL(request.url, "http://" + request.headers.host);
-      const query = url.searchParams.get("query")?.trim().toLowerCase() ?? "";
-      const articles = helpArticles.filter((article) => article.allowedRoles.includes(user.role) && (!query || article.title.toLowerCase().includes(query) || article.body.toLowerCase().includes(query) || article.category.toLowerCase().includes(query)));
-      sendJson(response, 200, { articles });
+      const query = url.searchParams.get("query")?.trim() ?? "";
+      const role = apiRoleToDatabaseRole(user.role);
+      const records = await prisma.helpArticle.findMany({
+        where: {
+          allowedRoles: { has: role },
+          ...(query ? { OR: [{ title: { contains: query, mode: "insensitive" } }, { body: { contains: query, mode: "insensitive" } }] } : {})
+        },
+        orderBy: { createdAt: "asc" }
+      });
+      sendJson(response, 200, { articles: records.map(databaseHelpArticleToApi) });
       return;
     }
 
     if (request.method === "POST" && request.url === "/api/help/support-tickets") {
-      const user = requireUser(request, response);
+      const user = await requireUser(request, response);
       if (!user) return;
       const body = await readJsonBody<{ subject?: string; message?: string }>(request);
       if (!body.subject?.trim() || !body.message?.trim()) {
         sendJson(response, 400, { error: "Subject and message are required" });
         return;
       }
-      const ticket = { id: "ticket-" + Date.now(), requesterId: user.id, requesterName: user.name, subject: body.subject.trim(), message: body.message.trim(), status: "Open" as const, createdAt: new Date().toISOString() };
-      supportTickets.unshift(ticket);
-      notifications.unshift({ id: "notif-ticket-" + Date.now(), recipientRole: "Admin", title: "New support request", message: user.name + ": " + ticket.subject, category: "system", read: false, createdAt: new Date().toISOString(), emailStatus: "Sent", retryCount: 0 });
-      addAudit(user.id, "support.ticket.created", ticket.id);
-      sendJson(response, 201, { ticket });
+      const ticket = await prisma.supportTicket.create({ data: { id: randomUUID(), requesterId: user.id, subject: body.subject.trim(), message: body.message.trim(), status: "OPEN" }, include: { requester: true } });
+      await addDatabaseNotification({ recipientRole: "Admin", title: "New support request", message: `${user.name}: ${ticket.subject}`, category: "SYSTEM" });
+      await addDatabaseAudit(user.id, "support.ticket.created", ticket.id);
+      sendJson(response, 201, { ticket: databaseSupportTicketToApi(ticket) });
       return;
     }
-
     if (request.method === "GET" && request.url === "/api/settings") {
-      const user = requireUser(request, response);
+      const user = await requireUser(request, response);
       if (!user) return;
-
-      sendJson(response, 200, { settings: systemSettings });
+      const settings = await getDatabaseSystemSettings();
+      syncSystemSettingsCache(settings);
+      sendJson(response, 200, { settings });
       return;
     }
 
     if (request.method === "PUT" && request.url === "/api/settings") {
-      const user = requireUser(request, response);
+      const user = await requireUser(request, response);
       if (!user) return;
-
       const body = await readJsonBody<Partial<SystemSettings>>(request);
       const validationError = validateSystemSettings(body);
       if (validationError) {
         sendJson(response, 400, { error: validationError });
         return;
       }
-
-      const disallowedGroups = getChangedSettingGroups(systemSettings, body).filter((group) => !canEditSettingGroup(user.role, group));
+      const current = await getDatabaseSystemSettings();
+      const changedGroups = getChangedSettingGroups(current, body);
+      const disallowedGroups = changedGroups.filter((group) => !canEditSettingGroup(user.role, group));
       if (disallowedGroups.length > 0) {
         sendJson(response, 403, { error: "Forbidden" });
         return;
       }
-
-      updateSystemSettings(body);
-      addAudit(user.id, "settings.updated", disallowedGroups.length ? disallowedGroups.join(",") : "settings");
-      sendJson(response, 200, { settings: systemSettings });
+      const next = structuredClone(current);
+      updateSystemSettings(next, body);
+      const settings = await saveDatabaseSystemSettings(next, body);
+      syncSystemSettingsCache(settings);
+      await addDatabaseAudit(user.id, "settings.updated", changedGroups.join(",") || "settings");
+      sendJson(response, 200, { settings });
       return;
     }
-
     if (request.method === "GET" && request.url === "/api/payroll/periods") {
-      const user = requireUser(request, response);
+      const user = await requireUser(request, response);
       if (!user) return;
-      if (!canViewPayroll(user.role)) {
-        sendJson(response, 403, { error: "Forbidden" });
-        return;
-      }
-
-      ensureDefaultPayrollPeriod();
-      sendJson(response, 200, { periods: payrollPeriods.map((period) => scopePayrollPeriod(period, user)) });
+      if (!canViewPayroll(user.role)) { sendJson(response, 403, { error: "Forbidden" }); return; }
+      const periods = await getDatabasePayrollPeriods();
+      sendJson(response, 200, { periods: await scopeDatabasePayrollPeriods(periods, user) });
       return;
     }
 
     if (request.method === "POST" && request.url === "/api/payroll/periods") {
-      const user = requireUser(request, response);
+      const user = await requireUser(request, response);
       if (!user) return;
-      if (user.role !== "Payroll" && user.role !== "Admin") {
-        sendJson(response, 403, { error: "Forbidden" });
-        return;
-      }
-
+      if (user.role !== "Payroll" && user.role !== "Admin") { sendJson(response, 403, { error: "Forbidden" }); return; }
       const body = await readJsonBody<{ name?: string; startDate?: string; endDate?: string }>(request);
       const validationError = validatePayrollPeriodBody(body);
-      if (validationError) {
-        sendJson(response, 400, { error: validationError });
-        return;
-      }
-
-      const period: PayrollPeriod = {
-        id: `payroll-${Date.now()}`,
-        name: body.name?.trim() || `Payroll ${body.startDate} - ${body.endDate}`,
-        startDate: body.startDate ?? "",
-        endDate: body.endDate ?? "",
-        status: "Draft",
-        createdBy: user.id,
-        createdAt: new Date().toISOString(),
-        warnings: [],
-        rows: [],
-        versions: []
-      };
-      refreshPayrollPeriod(period, user.id, "created");
-      payrollPeriods.unshift(period);
-      addNotification({ recipientRole: "Payroll", title: "Payroll period needs confirmation", message: period.name + " is ready for payroll review.", category: "payroll" });
-      addAudit(user.id, "payroll.period.created", period.id);
-      sendJson(response, 201, { period: scopePayrollPeriod(period, user) });
+      if (validationError) { sendJson(response, 400, { error: validationError }); return; }
+      const periodId = randomUUID();
+      await prisma.payrollPeriod.create({ data: { id: periodId, name: body.name?.trim() || `Payroll ${body.startDate} - ${body.endDate}`, startDate: dateOnlyValue(body.startDate ?? ""), endDate: dateOnlyValue(body.endDate ?? ""), status: "DRAFT", createdById: user.id, warnings: [] } });
+      const period = await recalculateDatabasePayrollPeriod(periodId, user.id, "created");
+      await addDatabaseNotification({ recipientRole: "Payroll", title: "Payroll period needs confirmation", message: `${period.name} is ready for payroll review.`, category: "PAYROLL" });
+      await addDatabaseAudit(user.id, "payroll.period.created", periodId);
+      sendJson(response, 201, { period: (await scopeDatabasePayrollPeriods([period], user))[0] });
       return;
     }
 
     if (request.url?.match(/^\/api\/payroll\/periods\/[^/]+\/(recalculate|confirm|lock|unlock)$/) && request.method === "POST") {
-      const user = requireUser(request, response);
+      const user = await requireUser(request, response);
       if (!user) return;
-
       const [, , , , periodId, action] = request.url.split("/");
-      const period = payrollPeriods.find((item) => item.id === periodId);
-      if (!period) {
-        sendJson(response, 404, { error: "Payroll period not found" });
-        return;
-      }
-
+      const existing = await getDatabasePayrollPeriod(periodId);
+      if (!existing) { sendJson(response, 404, { error: "Payroll period not found" }); return; }
       if (action === "recalculate") {
-        if (user.role !== "Payroll" && user.role !== "HR" && user.role !== "Admin") {
-          sendJson(response, 403, { error: "Forbidden" });
-          return;
-        }
-        if (period.status === "Locked") {
-          sendJson(response, 409, { error: "Payroll period is locked" });
-          return;
-        }
-        refreshPayrollPeriod(period, user.id, "recalculated");
-        addAudit(user.id, "payroll.period.recalculated", period.id);
-        sendJson(response, 200, { period: scopePayrollPeriod(period, user) });
+        if (user.role !== "Payroll" && user.role !== "HR" && user.role !== "Admin") { sendJson(response, 403, { error: "Forbidden" }); return; }
+        if (existing.status === "LOCKED") { sendJson(response, 409, { error: "Payroll period is locked" }); return; }
+        const period = await recalculateDatabasePayrollPeriod(periodId, user.id, "recalculated");
+        await addDatabaseAudit(user.id, "payroll.period.recalculated", periodId);
+        sendJson(response, 200, { period: (await scopeDatabasePayrollPeriods([period], user))[0] });
         return;
       }
-
       if (action === "confirm") {
-        if (user.role !== "HR" && user.role !== "Admin" && user.role !== "Payroll") {
-          sendJson(response, 403, { error: "Forbidden" });
-          return;
-        }
-        if (period.status === "Locked") {
-          sendJson(response, 409, { error: "Payroll period is locked" });
-          return;
-        }
-        refreshPayrollPeriod(period, user.id, "confirmed");
-        period.status = "Confirmed";
-        period.confirmedBy = user.id;
-        period.confirmedAt = new Date().toISOString();
-        addAudit(user.id, "payroll.period.confirmed", period.id);
-        sendJson(response, 200, { period: scopePayrollPeriod(period, user) });
+        if (user.role !== "HR" && user.role !== "Admin" && user.role !== "Payroll") { sendJson(response, 403, { error: "Forbidden" }); return; }
+        if (existing.status === "LOCKED") { sendJson(response, 409, { error: "Payroll period is locked" }); return; }
+        await recalculateDatabasePayrollPeriod(periodId, user.id, "confirmed");
+        await prisma.payrollPeriod.update({ where: { id: periodId }, data: { status: "CONFIRMED", confirmedById: user.id, confirmedAt: new Date() } });
+        const period = await getDatabasePayrollPeriod(periodId);
+        await addDatabaseAudit(user.id, "payroll.period.confirmed", periodId);
+        sendJson(response, 200, { period: (await scopeDatabasePayrollPeriods([period!], user))[0] });
         return;
       }
-
       if (action === "lock") {
-        if (user.role !== "Payroll" && user.role !== "Admin") {
-          sendJson(response, 403, { error: "Forbidden" });
-          return;
-        }
-        refreshPayrollPeriod(period, user.id, "pre-lock check");
-        if (systemSettings.payrollExport.lockRequiresResolvedLogs && period.warnings.length > 0) {
-          sendJson(response, 409, { error: "Payroll period has unresolved warnings", warnings: period.warnings });
-          return;
-        }
-        period.status = "Locked";
-        period.lockedBy = user.id;
-        period.lockedAt = new Date().toISOString();
-        lockAttendanceLogsForPeriod(period);
-        addPayrollVersion(period, user.id, "locked");
-        addAudit(user.id, "payroll.period.locked", period.id);
-        sendJson(response, 200, { period: scopePayrollPeriod(period, user) });
+        if (user.role !== "Payroll" && user.role !== "Admin") { sendJson(response, 403, { error: "Forbidden" }); return; }
+        const checked = await recalculateDatabasePayrollPeriod(periodId, user.id, "pre-lock check");
+        if (systemSettings.payrollExport.lockRequiresResolvedLogs && checked.warnings.length > 0) { sendJson(response, 409, { error: "Payroll period has unresolved warnings", warnings: checked.warnings }); return; }
+        await prisma.$transaction([
+          prisma.payrollPeriod.update({ where: { id: periodId }, data: { status: "LOCKED", lockedById: user.id, lockedAt: new Date() } }),
+          prisma.attendanceLog.updateMany({ where: { workDate: { gte: checked.startDate, lte: checked.endDate } }, data: { payrollLocked: true } })
+        ]);
+        await addDatabasePayrollVersion(periodId, user.id, "locked");
+        const period = await getDatabasePayrollPeriod(periodId);
+        await addDatabaseAudit(user.id, "payroll.period.locked", periodId);
+        sendJson(response, 200, { period: (await scopeDatabasePayrollPeriods([period!], user))[0] });
         return;
       }
-
       if (action === "unlock") {
-        if (user.role !== "Admin") {
-          sendJson(response, 403, { error: "Forbidden" });
-          return;
-        }
-        period.status = "Draft";
-        period.unlockedBy = user.id;
-        period.unlockedAt = new Date().toISOString();
-        unlockAttendanceLogsForPeriod(period);
-        addPayrollVersion(period, user.id, "unlocked");
-        addAudit(user.id, "payroll.period.unlocked", period.id);
-        sendJson(response, 200, { period: scopePayrollPeriod(period, user) });
+        if (user.role !== "Admin") { sendJson(response, 403, { error: "Forbidden" }); return; }
+        await prisma.$transaction([
+          prisma.payrollPeriod.update({ where: { id: periodId }, data: { status: "DRAFT", unlockedById: user.id, unlockedAt: new Date() } }),
+          prisma.attendanceLog.updateMany({ where: { workDate: { gte: existing.startDate, lte: existing.endDate } }, data: { payrollLocked: false } })
+        ]);
+        await addDatabasePayrollVersion(periodId, user.id, "unlocked");
+        const period = await getDatabasePayrollPeriod(periodId);
+        await addDatabaseAudit(user.id, "payroll.period.unlocked", periodId);
+        sendJson(response, 200, { period: (await scopeDatabasePayrollPeriods([period!], user))[0] });
         return;
       }
     }
 
     if (request.method === "GET" && request.url?.match(/^\/api\/payroll\/periods\/[^/]+\/export/)) {
-      const user = requireUser(request, response);
+      const user = await requireUser(request, response);
       if (!user) return;
-      if (!canViewPayroll(user.role)) {
-        sendJson(response, 403, { error: "Forbidden" });
-        return;
-      }
-
+      if (!canViewPayroll(user.role)) { sendJson(response, 403, { error: "Forbidden" }); return; }
       const url = new URL(request.url, `http://${request.headers.host}`);
       const periodId = request.url.split("/")[4];
-      const period = payrollPeriods.find((item) => item.id === periodId);
-      if (!period) {
-        sendJson(response, 404, { error: "Payroll period not found" });
-        return;
-      }
+      const record = await getDatabasePayrollPeriod(periodId);
+      if (!record) { sendJson(response, 404, { error: "Payroll period not found" }); return; }
       const format = url.searchParams.get("format") ?? "excel";
-      if (format !== "excel" && format !== "pdf") {
-        sendJson(response, 400, { error: "Unsupported export format" });
-        return;
-      }
-      const scopedPeriod = scopePayrollPeriod(period, user);
-      const rows = toPayrollExportRows(scopedPeriod);
-      const body = format === "pdf" ? buildSimplePdf(scopedPeriod.name, rows) : buildExcelWorkbook(scopedPeriod.name, rows);
-      response.writeHead(200, {
-        "Content-Type": format === "pdf" ? "application/pdf" : "application/vnd.ms-excel; charset=utf-8",
-        "Content-Disposition": `attachment; filename="payroll-summary.${format === "excel" ? "xls" : "pdf"}"`
-      });
+      if (format !== "excel" && format !== "pdf") { sendJson(response, 400, { error: "Unsupported export format" }); return; }
+      const scopedPeriod = (await scopeDatabasePayrollPeriods([record], user))[0];
+      const apiPeriod = scopedPeriod;
+      const rows = toPayrollExportRows(apiPeriod);
+      const body = format === "pdf" ? buildSimplePdf(apiPeriod.name, rows) : buildExcelWorkbook(apiPeriod.name, rows);
+      response.writeHead(200, { "Content-Type": format === "pdf" ? "application/pdf" : "application/vnd.ms-excel; charset=utf-8", "Content-Disposition": `attachment; filename="payroll-summary.${format === "excel" ? "xls" : "pdf"}"` });
       response.end(body);
       return;
     }
-
     if (request.method === "GET" && request.url?.startsWith("/api/attendance/export")) {
-      const user = requireUser(request, response);
+      const user = await requireUser(request, response);
       if (!user) return;
 
       const url = new URL(request.url, `http://${request.headers.host}`);
@@ -863,7 +740,8 @@ const server = createServer(async (request, response) => {
         sendJson(response, 400, { error: "Unsupported export format" });
         return;
       }
-      const scopedLogs = filterAttendanceLogs(getRoleScopedLogs(attendanceLogs, user), url.searchParams);
+      const databaseLogs = (await prisma.attendanceLog.findMany({ include: { employee: true }, orderBy: { workDate: "desc" } })).map(databaseAttendanceLogToApi);
+      const scopedLogs = filterAttendanceLogs(getRoleScopedLogs(databaseLogs, user), url.searchParams);
       const rows = toExportRows(scopedLogs);
       const body = format === "pdf" ? buildSimplePdf("Attendance Logs", rows) : buildExcelWorkbook("Attendance Logs", rows);
       response.writeHead(200, {
@@ -875,52 +753,42 @@ const server = createServer(async (request, response) => {
     }
 
     if (request.method === "POST" && request.url?.match(/^\/api\/attendance\/logs\/[^/]+\/adjustment$/)) {
-      const user = requireUser(request, response);
+      const user = await requireUser(request, response);
       if (!user) return;
-
       const logId = request.url.split("/")[4];
-      const log = attendanceLogs.find((item) => item.id === logId);
-      if (!log || !canViewLog(user, log)) {
-        sendJson(response, 404, { error: "Log not found" });
-        return;
-      }
-
-      if (log.payrollLocked) {
-        sendJson(response, 409, { error: "Payroll period is locked" });
-        return;
-      }
-
-      log.adjustmentStatus = "Pending";
-      addAudit(user.id, "attendance.adjustment.requested", log.id);
-      sendJson(response, 200, { log });
+      const record = await prisma.attendanceLog.findUnique({ where: { id: logId }, include: { employee: true } });
+      const log = record ? databaseAttendanceLogToApi(record) : null;
+      if (!record || !log || !canViewLog(user, log)) { sendJson(response, 404, { error: "Log not found" }); return; }
+      if (record.payrollLocked) { sendJson(response, 409, { error: "Payroll period is locked" }); return; }
+      const body = await readJsonBody<{ reason?: string }>(request);
+      const updated = await prisma.$transaction(async (transaction) => {
+        await transaction.attendanceAdjustment.upsert({ where: { attendanceLogId: logId }, update: { reason: body.reason?.trim() || "Attendance adjustment requested", requestedById: user.id, status: "PENDING", decidedById: null, decidedAt: null }, create: { attendanceLogId: logId, reason: body.reason?.trim() || "Attendance adjustment requested", requestedById: user.id, status: "PENDING" } });
+        return transaction.attendanceLog.update({ where: { id: logId }, data: { adjustmentStatus: "PENDING" }, include: { employee: true } });
+      });
+      await addDatabaseAudit(user.id, "attendance.adjustment.requested", logId);
+      sendJson(response, 200, { log: databaseAttendanceLogToApi(updated) });
       return;
     }
 
     if (request.method === "POST" && request.url?.match(/^\/api\/attendance\/logs\/[^/]+\/(approve|reject)$/)) {
-      const user = requireUser(request, response);
+      const user = await requireUser(request, response);
       if (!user) return;
-
       const [, , , , logId, action] = request.url.split("/");
-      const log = attendanceLogs.find((item) => item.id === logId);
-      if (!log || !canApproveAdjustment(user, log)) {
-        sendJson(response, 403, { error: "Forbidden" });
-        return;
-      }
-
-      if (log.payrollLocked) {
-        sendJson(response, 409, { error: "Payroll period is locked" });
-        return;
-      }
-
-      log.adjustmentStatus = action === "approve" ? "Approved" : "Rejected";
-      if (action === "approve") log.status = "Adjusted";
-      addAudit(user.id, `attendance.adjustment.${action}d`, log.id);
-      sendJson(response, 200, { log });
+      const record = await prisma.attendanceLog.findUnique({ where: { id: logId }, include: { employee: true } });
+      const log = record ? databaseAttendanceLogToApi(record) : null;
+      if (!record || !log || !canApproveAdjustment(user, log)) { sendJson(response, 403, { error: "Forbidden" }); return; }
+      if (record.payrollLocked) { sendJson(response, 409, { error: "Payroll period is locked" }); return; }
+      const approved = action === "approve";
+      const updated = await prisma.$transaction(async (transaction) => {
+        await transaction.attendanceAdjustment.updateMany({ where: { attendanceLogId: logId }, data: { status: approved ? "APPROVED" : "REJECTED", decidedById: user.id, decidedAt: new Date() } });
+        return transaction.attendanceLog.update({ where: { id: logId }, data: { adjustmentStatus: approved ? "APPROVED" : "REJECTED", ...(approved ? { status: "ADJUSTED" as const } : {}) }, include: { employee: true } });
+      });
+      await addDatabaseAudit(user.id, `attendance.adjustment.${action}d`, logId);
+      sendJson(response, 200, { log: databaseAttendanceLogToApi(updated) });
       return;
     }
-
     if (request.method === "GET" && request.url === "/api/audit-logs") {
-      const user = requireUser(request, response);
+      const user = await requireUser(request, response);
       if (!user) return;
 
       if (user.role !== "Admin" && user.role !== "HR" && user.role !== "Payroll") {
@@ -928,7 +796,8 @@ const server = createServer(async (request, response) => {
         return;
       }
 
-      sendJson(response, 200, { auditLogs });
+      const databaseAuditLogs = await prisma.auditLog.findMany({ orderBy: { createdAt: "desc" } });
+      sendJson(response, 200, { auditLogs: databaseAuditLogs });
       return;
     }
 
@@ -949,129 +818,115 @@ server.on("error", (error: NodeJS.ErrnoException) => {
   throw error;
 });
 
-server.listen(port, () => {
-  console.log(`Workforce Pro API listening on http://localhost:${port}`);
-});
+async function startServer() {
+  syncSystemSettingsCache(await getDatabaseSystemSettings());
+  server.listen(port, () => {
+    console.log(`Workforce Pro API listening on http://localhost:${port}`);
+  });
+}
 
+void startServer().catch((error) => {
+  console.error("Unable to initialize Workforce Pro API", error);
+  process.exit(1);
+});
 function canViewPayroll(role: string) {
   return role === "Manager" || role === "HR" || role === "Payroll" || role === "Admin";
 }
 
-function ensureDefaultPayrollPeriod() {
-  if (payrollPeriods.length > 0) return;
-  const start = new Date();
-  start.setDate(1);
-  const end = new Date(start.getFullYear(), start.getMonth() + 1, 0);
-  const period: PayrollPeriod = {
-    id: "payroll-current-demo",
-    name: "Current payroll period",
-    startDate: start.toISOString().slice(0, 10),
-    endDate: end.toISOString().slice(0, 10),
-    status: "Draft",
-    createdBy: "system",
-    createdAt: new Date().toISOString(),
-    warnings: [],
-    rows: [],
-    versions: []
-  };
-  refreshPayrollPeriod(period, "system", "seeded");
-  payrollPeriods.push(period);
-}
-
 function validatePayrollPeriodBody(body: { name?: string; startDate?: string; endDate?: string }) {
   if (!body.startDate || !body.endDate) return "Payroll period dates are required";
-  if (new Date(`${body.endDate}T00:00:00`) < new Date(`${body.startDate}T00:00:00`)) return "Invalid payroll date range";
+  if (dateOnlyValue(body.endDate) < dateOnlyValue(body.startDate)) return "Invalid payroll date range";
   return "";
 }
 
-function refreshPayrollPeriod(period: PayrollPeriod, actorId: string, action: string) {
-  period.rows = calculatePayrollRows(period.startDate, period.endDate);
-  period.warnings = calculatePayrollWarnings(period);
-  addPayrollVersion(period, actorId, action);
+type DatabasePayrollPeriod = PrismaPayrollPeriod & { rows: (PrismaPayrollSummaryRow & { employee: PrismaUser })[]; versions: PrismaPayrollVersion[] };
+
+async function getDatabasePayrollPeriod(id: string) {
+  return prisma.payrollPeriod.findUnique({ where: { id }, include: { rows: { include: { employee: true }, orderBy: { employeeId: "asc" } }, versions: { orderBy: { version: "desc" } } } });
 }
 
-function calculatePayrollRows(startDate: string, endDate: string): PayrollSummaryRow[] {
+async function getDatabasePayrollPeriods() {
+  return prisma.payrollPeriod.findMany({ include: { rows: { include: { employee: true }, orderBy: { employeeId: "asc" } }, versions: { orderBy: { version: "desc" } } }, orderBy: { startDate: "desc" } });
+}
+
+function databasePayrollPeriodToApi(period: DatabasePayrollPeriod): PayrollPeriod {
+  const status = { DRAFT: "Draft", CONFIRMED: "Confirmed", LOCKED: "Locked" } as const;
+  return { id: period.id, name: period.name, startDate: period.startDate.toISOString().slice(0, 10), endDate: period.endDate.toISOString().slice(0, 10), status: status[period.status], createdBy: period.createdById, createdAt: period.createdAt.toISOString(), confirmedBy: period.confirmedById ?? undefined, confirmedAt: period.confirmedAt?.toISOString(), lockedBy: period.lockedById ?? undefined, lockedAt: period.lockedAt?.toISOString(), unlockedBy: period.unlockedById ?? undefined, unlockedAt: period.unlockedAt?.toISOString(), warnings: period.warnings, rows: period.rows.map((row) => ({ employeeId: row.employeeId, employeeName: row.employee.name, department: row.department, standardHours: Number(row.standardHours), workedHours: Number(row.workedHours), overtimeHours: Number(row.overtimeHours), paidLeaveHours: Number(row.paidLeaveHours), unpaidLeaveHours: Number(row.unpaidLeaveHours), missingHours: Number(row.missingHours), lateCount: row.lateCount, earlyLeaveCount: row.earlyLeaveCount, missingLogCount: row.missingLogCount, totalPayableHours: Number(row.totalPayableHours) })), versions: period.versions.map((version) => ({ version: version.version, action: version.action, actorId: version.actorId, createdAt: version.createdAt.toISOString(), notes: version.notes })) };
+}
+
+async function scopeDatabasePayrollPeriods(periods: DatabasePayrollPeriod[], user: { id: string; role: string }) {
+  if (user.role !== "Manager") return periods.map(databasePayrollPeriodToApi);
+  const team = await prisma.user.findMany({ where: { OR: [{ id: user.id }, { managerId: user.id }] }, select: { id: true } });
+  const employeeIds = new Set(team.map((employee) => employee.id));
+  return periods.map((period) => databasePayrollPeriodToApi({ ...period, rows: period.rows.filter((row) => employeeIds.has(row.employeeId)) }));
+}
+
+async function recalculateDatabasePayrollPeriod(periodId: string, actorId: string, action: string) {
+  const period = await prisma.payrollPeriod.findUnique({ where: { id: periodId } });
+  if (!period) throw new Error("Payroll period not found");
+  const [employees, logs, unpaidLeaves] = await Promise.all([
+    prisma.user.findMany({ where: { role: { not: "ADMIN" } }, orderBy: { id: "asc" } }),
+    prisma.attendanceLog.findMany({ where: { workDate: { gte: period.startDate, lte: period.endDate } } }),
+    prisma.leaveRequest.findMany({ where: { type: "UNPAID", status: "APPROVED", startDate: { lte: period.endDate }, endDate: { gte: period.startDate } } })
+  ]);
+  const startDate = period.startDate.toISOString().slice(0, 10);
+  const endDate = period.endDate.toISOString().slice(0, 10);
   const businessDays = countBusinessDays(startDate, endDate);
-  const periodLogs = attendanceLogs.filter((log) => isDateInRange(log.workDate, startDate, endDate));
-  const payrollUsers = users.filter((item) => item.role !== "Admin");
-
-  return payrollUsers.map((employee) => {
-    const employeeLogs = periodLogs.filter((log) => log.employeeId === employee.id);
-    const row: PayrollSummaryRow = {
-      employeeId: employee.id,
-      employeeName: employee.name,
-      department: roleDepartment(employee.role),
-      standardHours: businessDays * 8,
-      workedHours: 0,
-      overtimeHours: 0,
-      paidLeaveHours: 0,
-      unpaidLeaveHours: 0,
-      missingHours: 0,
-      lateCount: 0,
-      earlyLeaveCount: 0,
-      missingLogCount: 0,
-      totalPayableHours: 0
-    };
-
-    for (const log of employeeLogs) {
-      if (log.status === "On Leave") {
-        if (isUnpaidLeave(employee.id, log.workDate)) row.unpaidLeaveHours += 8;
-        else row.paidLeaveHours += 8;
-      } else {
-        row.workedHours += parseHourText(log.totalHours);
-      }
-      row.overtimeHours += parseHourText(log.overtime);
-      if (log.status === "Late") row.lateCount += 1;
-      if (log.status === "Early Leave") row.earlyLeaveCount += 1;
-      if (log.status === "Missing Check-out") row.missingLogCount += 1;
-      if (log.adjustmentStatus === "Pending") row.missingLogCount += 1;
-    }
-
-    row.totalPayableHours = roundHours(row.workedHours + row.overtimeHours + row.paidLeaveHours);
-    row.missingHours = Math.max(0, roundHours(row.standardHours - row.workedHours - row.paidLeaveHours - row.unpaidLeaveHours));
+  const rows = employees.map((employee) => {
+    const employeeLogs = logs.filter((log) => log.employeeId === employee.id);
+    const row: PayrollSummaryRow = { employeeId: employee.id, employeeName: employee.name, department: employee.department, standardHours: businessDays * 8, workedHours: 0, overtimeHours: 0, paidLeaveHours: 0, unpaidLeaveHours: 0, missingHours: 0, lateCount: 0, earlyLeaveCount: 0, missingLogCount: 0, totalPayableHours: 0 };
+    employeeLogs.forEach((log) => {
+      const workDate = log.workDate.toISOString().slice(0, 10);
+      if (log.status === "ON_LEAVE") {
+        const unpaid = unpaidLeaves.some((leave) => leave.employeeId === employee.id && workDate >= leave.startDate.toISOString().slice(0, 10) && workDate <= leave.endDate.toISOString().slice(0, 10));
+        if (unpaid) row.unpaidLeaveHours += 8; else row.paidLeaveHours += 8;
+      } else row.workedHours += log.totalMinutes / 60;
+      row.overtimeHours += log.overtimeMinutes / 60;
+      if (log.status === "LATE") row.lateCount += 1;
+      if (log.status === "EARLY_LEAVE") row.earlyLeaveCount += 1;
+      if (log.status === "MISSING_CHECK_OUT") row.missingLogCount += 1;
+      if (log.adjustmentStatus === "PENDING") row.missingLogCount += 1;
+    });
     row.workedHours = roundHours(row.workedHours);
     row.overtimeHours = roundHours(row.overtimeHours);
+    row.totalPayableHours = roundHours(row.workedHours + row.overtimeHours + row.paidLeaveHours);
+    row.missingHours = Math.max(0, roundHours(row.standardHours - row.workedHours - row.paidLeaveHours - row.unpaidLeaveHours));
     return row;
   });
-}
-
-function calculatePayrollWarnings(period: PayrollPeriod) {
-  const warnings = period.rows
-    .filter((row) => row.missingLogCount > 0)
-    .map((row) => `${row.employeeName} has ${row.missingLogCount} unresolved attendance item(s)`);
-  const pendingAdjustments = attendanceLogs.filter((log) => isDateInRange(log.workDate, period.startDate, period.endDate) && log.adjustmentStatus === "Pending").length;
-  if (pendingAdjustments > 0) warnings.unshift(`${pendingAdjustments} pending attendance adjustment(s) must be resolved before locking`);
-  return [...new Set(warnings)];
-}
-
-function scopePayrollPeriod(period: PayrollPeriod, user: { id: string; role: string }) {
-  if (user.role !== "Manager") return period;
-  const teamEmployeeIds = new Set(attendanceLogs.filter((log) => log.managerId === user.id || log.employeeId === user.id).map((log) => log.employeeId));
-  return { ...period, rows: period.rows.filter((row) => teamEmployeeIds.has(row.employeeId)) };
-}
-
-function lockAttendanceLogsForPeriod(period: PayrollPeriod) {
-  attendanceLogs.forEach((log) => {
-    if (isDateInRange(log.workDate, period.startDate, period.endDate)) log.payrollLocked = true;
+  const warnings = [...new Set(rows.filter((row) => row.missingLogCount > 0).map((row) => `${row.employeeName} has ${row.missingLogCount} unresolved attendance item(s)`))];
+  const pendingCount = logs.filter((log) => log.adjustmentStatus === "PENDING").length;
+  if (pendingCount > 0) warnings.unshift(`${pendingCount} pending attendance adjustment(s) must be resolved before locking`);
+  await prisma.$transaction(async (transaction) => {
+    await transaction.payrollSummaryRow.deleteMany({ where: { payrollPeriodId: periodId } });
+    if (rows.length > 0) await transaction.payrollSummaryRow.createMany({ data: rows.map((row) => ({ payrollPeriodId: periodId, employeeId: row.employeeId, department: row.department, standardHours: row.standardHours, workedHours: row.workedHours, overtimeHours: row.overtimeHours, paidLeaveHours: row.paidLeaveHours, unpaidLeaveHours: row.unpaidLeaveHours, missingHours: row.missingHours, lateCount: row.lateCount, earlyLeaveCount: row.earlyLeaveCount, missingLogCount: row.missingLogCount, totalPayableHours: row.totalPayableHours })) });
+    await transaction.payrollPeriod.update({ where: { id: periodId }, data: { warnings } });
   });
+  await addDatabasePayrollVersion(periodId, actorId, action);
+  return (await getDatabasePayrollPeriod(periodId))!;
 }
 
-function unlockAttendanceLogsForPeriod(period: PayrollPeriod) {
-  attendanceLogs.forEach((log) => {
-    if (isDateInRange(log.workDate, period.startDate, period.endDate)) log.payrollLocked = false;
-  });
+async function addDatabasePayrollVersion(periodId: string, actorId: string, action: string) {
+  const [latest, rowCount, period] = await Promise.all([prisma.payrollVersion.aggregate({ where: { payrollPeriodId: periodId }, _max: { version: true } }), prisma.payrollSummaryRow.count({ where: { payrollPeriodId: periodId } }), prisma.payrollPeriod.findUniqueOrThrow({ where: { id: periodId }, select: { warnings: true } })]);
+  return prisma.payrollVersion.create({ data: { payrollPeriodId: periodId, version: (latest._max.version ?? 0) + 1, action, actorId, notes: `${action} with ${rowCount} employee row(s) and ${period.warnings.length} warning(s)` } });
 }
 
-function addPayrollVersion(period: PayrollPeriod, actorId: string, action: string) {
-  period.versions.unshift({
-    version: period.versions.length + 1,
-    action,
-    actorId,
-    createdAt: new Date().toISOString(),
-    notes: `${action} with ${period.rows.length} employee row(s) and ${period.warnings.length} warning(s)`
-  });
+function countBusinessDays(startDate: string, endDate: string) {
+  let count = 0;
+  const cursor = dateOnlyValue(startDate);
+  const end = dateOnlyValue(endDate);
+  while (cursor <= end) {
+    const day = cursor.getUTCDay();
+    const isoDate = cursor.toISOString().slice(0, 10);
+    const isHoliday = systemSettings.holidays.some((holiday) => isoDate >= holiday.startDate && isoDate <= holiday.endDate);
+    if (day !== 0 && day !== 6 && !isHoliday) count += 1;
+    cursor.setUTCDate(cursor.getUTCDate() + 1);
+  }
+  return count;
 }
 
+function roundHours(value: number) {
+  return Math.round(value * 100) / 100;
+}
 function toPayrollExportRows(period: PayrollPeriod) {
   return [
     ["Employee", "Department", "Standard", "Worked", "Overtime", "Paid leave", "Unpaid leave", "Missing", "Status"],
@@ -1089,43 +944,31 @@ function toPayrollExportRows(period: PayrollPeriod) {
   ];
 }
 
-function isUnpaidLeave(employeeId: string, workDate: string) {
-  return leaveRequests.some((request) => request.employeeId === employeeId && request.type === "Unpaid Leave" && request.status === "Approved" && isDateInRange(workDate, request.startDate, request.endDate));
-}
-
-function countBusinessDays(startDate: string, endDate: string) {
-  let count = 0;
-  const cursor = new Date(`${startDate}T00:00:00`);
-  const end = new Date(`${endDate}T00:00:00`);
-  while (cursor <= end) {
-    const day = cursor.getDay();
-    const isoDate = cursor.toISOString().slice(0, 10);
-    const isHoliday = systemSettings.holidays.some((holiday) => isoDate >= holiday.startDate && isoDate <= holiday.endDate);
-    if (day !== 0 && day !== 6 && !isHoliday) count += 1;
-    cursor.setDate(cursor.getDate() + 1);
-  }
-  return count;
-}
-
-function isDateInRange(workDate: string, startDate: string, endDate: string) {
-  return workDate >= startDate && workDate <= endDate;
-}
-
-function parseHourText(value: string) {
-  const match = value.match(/(\d+)h\s*(\d+)m/);
-  if (!match) return 0;
-  return Number(match[1]) + Number(match[2]) / 60;
-}
-
-function roundHours(value: number) {
-  return Math.round(value * 100) / 100;
-}
-
-
 function canViewEmployees(role: string) {
   return role === "Manager" || role === "HR" || role === "Payroll" || role === "Admin";
 }
 
+async function resolveActiveManagerId(managerId?: string | null) {
+  const normalizedManagerId = normalizeManagerId(managerId);
+  if (!normalizedManagerId) return null;
+  const manager = await prisma.user.findUnique({
+    where: { id: normalizedManagerId },
+    select: { id: true, role: true, employmentStatus: true, locked: true }
+  });
+  return isActiveManager(manager) ? manager.id : null;
+}
+
+async function validateManagerAssignment(managerId?: string | null, employeeId?: string) {
+  const normalizedManagerId = normalizeManagerId(managerId);
+  if (!normalizedManagerId || normalizedManagerId === employeeId) {
+    return getManagerAssignmentError(normalizedManagerId, employeeId, null);
+  }
+  const manager = await prisma.user.findUnique({
+    where: { id: normalizedManagerId },
+    select: { id: true, role: true, employmentStatus: true, locked: true }
+  });
+  return getManagerAssignmentError(normalizedManagerId, employeeId, manager);
+}
 function canManageEmployees(role: string) {
   return role === "HR" || role === "Admin";
 }
@@ -1162,7 +1005,7 @@ function buildEmployee(body: Partial<User>): User {
     employeeCode: body.employeeCode?.trim() || `EMP-${String(now).slice(-5)}`,
     phone: body.phone?.trim() || "",
     position: body.position?.trim() || role,
-    managerId: body.managerId || (role === "Manager" || role === "Admin" ? "u-admin" : "u-manager"),
+    managerId: body.managerId?.trim() || undefined,
     hireDate: body.hireDate || new Date().toISOString().slice(0, 10),
     employmentStatus: locked ? "Locked" : (body.employmentStatus ?? "Active"),
     attendancePolicy: body.attendancePolicy?.trim() || "Office check-in",
@@ -1180,7 +1023,7 @@ function updateEmployee(employee: User, body: Partial<User>) {
   if (typeof body.employeeCode === "string") employee.employeeCode = body.employeeCode.trim();
   if (typeof body.phone === "string") employee.phone = body.phone.trim();
   if (typeof body.position === "string") employee.position = body.position.trim();
-  if (typeof body.managerId === "string") employee.managerId = body.managerId;
+  if (typeof body.managerId === "string") employee.managerId = body.managerId.trim() || undefined;
   if (typeof body.hireDate === "string") employee.hireDate = body.hireDate;
   if (body.employmentStatus) employee.employmentStatus = body.employmentStatus;
   if (typeof body.attendancePolicy === "string") employee.attendancePolicy = body.attendancePolicy.trim();
@@ -1189,7 +1032,7 @@ function updateEmployee(employee: User, body: Partial<User>) {
   employee.locked = Boolean(body.locked) || employee.employmentStatus === "Locked";
 }
 
-function parseEmployeeImportRows(rows: string) {
+function parseEmployeeImportRows(rows: string, existingUsers: User[]) {
   const errors: string[] = [];
   const parsedUsers: User[] = [];
   const allowedRoles: UserRole[] = ["Employee", "Manager", "HR", "Payroll", "Admin"];
@@ -1197,7 +1040,7 @@ function parseEmployeeImportRows(rows: string) {
     if (!line.trim()) return;
     const [name = "", email = "", role = "Employee", department = "", position = ""] = line.split(",").map((item) => item.trim());
     const normalizedEmail = email.toLowerCase();
-    if (!name || !normalizedEmail || !department || !allowedRoles.includes(role as UserRole) || users.some((item) => item.email.toLowerCase() === normalizedEmail) || parsedUsers.some((item) => item.email === normalizedEmail)) {
+    if (!name || !normalizedEmail || !department || !allowedRoles.includes(role as UserRole) || existingUsers.some((item) => item.email.toLowerCase() === normalizedEmail) || parsedUsers.some((item) => item.email === normalizedEmail)) {
       errors.push(`Row ${index + 1}: name, email, role and department are required and email must be unique`);
       return;
     }
@@ -1206,6 +1049,85 @@ function parseEmployeeImportRows(rows: string) {
   return { users: parsedUsers, errors };
 }
 
+function dateOnlyValue(value: string) {
+  return new Date(`${value}T00:00:00.000Z`);
+}
+
+function leaveTypeToDatabase(type: LeaveType) {
+  return ({ "Annual Leave": "ANNUAL", "Sick Leave": "SICK", "Unpaid Leave": "UNPAID", "Compensatory Leave": "COMPENSATORY" } as const)[type];
+}
+
+function databaseLeaveWorkflowToApi(record: { requireHrApproval: boolean; annualLeaveRequiresBalance: boolean; allowEmployeeCancelBeforeManager: boolean; attachmentRequiredForSickLeave: boolean; defaultAnnualLeaveDays: { toString(): string } }): LeaveWorkflowConfig {
+  return { requireHrApproval: record.requireHrApproval, annualLeaveRequiresBalance: record.annualLeaveRequiresBalance, allowEmployeeCancelBeforeManager: record.allowEmployeeCancelBeforeManager, attachmentRequiredForSickLeave: record.attachmentRequiredForSickLeave, defaultAnnualLeaveDays: Number(record.defaultAnnualLeaveDays) };
+}
+
+async function getDatabaseLeaveWorkflow() {
+  const record = await prisma.leaveWorkflowConfig.upsert({ where: { id: "default" }, update: {}, create: { id: "default" } });
+  return databaseLeaveWorkflowToApi(record);
+}
+
+function databaseLeaveRequestToApi(record: PrismaLeaveRequest & { employee: PrismaUser; attachment: PrismaLeaveAttachment | null }): LeaveRequest {
+  const typeMap = { ANNUAL: "Annual Leave", SICK: "Sick Leave", UNPAID: "Unpaid Leave", COMPENSATORY: "Compensatory Leave" } as const;
+  const statusMap = { DRAFT: "Draft", PENDING_MANAGER: "Pending Manager", PENDING_HR: "Pending HR", APPROVED: "Approved", REJECTED: "Rejected", CANCELLED: "Cancelled" } as const;
+  return {
+    id: record.id,
+    employeeId: record.employeeId,
+    employeeName: record.employee.name,
+    department: record.employee.department,
+    managerId: record.managerId ?? undefined,
+    type: typeMap[record.type],
+    startDate: record.startDate.toISOString().slice(0, 10),
+    endDate: record.endDate.toISOString().slice(0, 10),
+    days: Number(record.days),
+    reason: record.reason,
+    attachmentName: record.attachmentName ?? "",
+    attachment: record.attachment ? { name: record.attachment.name, mimeType: record.attachment.mimeType, size: record.attachment.size, url: record.attachment.url ?? undefined, storageKey: record.attachment.storageKey ?? undefined, dataUrl: record.attachment.dataUrl ?? undefined, uploadedAt: record.attachment.uploadedAt.toISOString(), uploadedBy: record.attachment.uploadedBy ?? undefined } : undefined,
+    status: statusMap[record.status],
+    createdAt: record.createdAt.toISOString()
+  };
+}
+
+async function getDatabaseLeaveRequests() {
+  const records = await prisma.leaveRequest.findMany({ include: { employee: true, attachment: true }, orderBy: { createdAt: "desc" } });
+  return records.map(databaseLeaveRequestToApi);
+}
+
+async function addDatabaseNotification(input: { recipientId?: string; recipientRole?: UserRole; title: string; message: string; category: "LEAVE" | "ATTENDANCE" | "CHECKOUT" | "ADJUSTMENT" | "PAYROLL" | "SYSTEM" }) {
+  const role = input.recipientRole ? ({ Employee: "EMPLOYEE", Manager: "MANAGER", HR: "HR", Payroll: "PAYROLL", Admin: "ADMIN" } as const)[input.recipientRole] : null;
+  return prisma.notification.create({ data: { id: randomUUID(), recipientId: input.recipientId ?? null, recipientRole: role, title: input.title, message: input.message, category: input.category, read: false, emailStatus: systemSettings.notifications.emailEnabled ? "SENT" : "NOT_SENT", retryCount: 0 } });
+}
+function databaseAttendanceSessionToApi(session: { id: string; employeeId: string; checkInAt: Date; device: string | null; ipAddress: string | null; location: string | null }) {
+  return { id: session.id, employeeId: session.employeeId, checkInAt: session.checkInAt.toISOString(), device: session.device ?? "Browser device", ipAddress: session.ipAddress ?? "Unknown", location: session.location ?? "Unknown" };
+}
+
+function databaseAttendanceLogToApi(record: PrismaAttendanceLog & { employee: PrismaUser }): AttendanceLog {
+  const statusMap = { ON_TIME: "On Time", LATE: "Late", EARLY_LEAVE: "Early Leave", ON_LEAVE: "On Leave", MISSING_CHECK_OUT: "Missing Check-out", HOLIDAY: "Holiday", WEEKEND: "Weekend", ADJUSTED: "Adjusted" } as const;
+  const adjustmentMap = { NONE: "None", PENDING: "Pending", APPROVED: "Approved", REJECTED: "Rejected" } as const;
+  return { id: record.id, employeeId: record.employeeId, employeeName: record.employee.name, department: record.employee.department, managerId: record.managerId ?? undefined, workDate: record.workDate.toISOString().slice(0, 10), date: formatLogDate(record.workDate), checkIn: record.checkInAt ? formatClockTime(record.checkInAt) : "--", checkOut: record.checkOutAt ? formatClockTime(record.checkOutAt) : "--", totalHours: `${Math.floor(record.totalMinutes / 60)}h ${record.totalMinutes % 60}m`, overtime: `${Math.floor(record.overtimeMinutes / 60)}h ${record.overtimeMinutes % 60}m`, status: statusMap[record.status], adjustmentStatus: adjustmentMap[record.adjustmentStatus], payrollLocked: record.payrollLocked };
+}
+function employeeDatabaseData(employee: User) {
+  return {
+    name: employee.name,
+    email: employee.email,
+    role: ({ Employee: "EMPLOYEE", Manager: "MANAGER", HR: "HR", Payroll: "PAYROLL", Admin: "ADMIN" } as const)[employee.role],
+    subtitle: employee.subtitle,
+    department: employee.subtitle,
+    employeeCode: employee.employeeCode || null,
+    phone: employee.phone || null,
+    position: employee.position || null,
+    managerId: employee.managerId || null,
+    hireDate: employee.hireDate ? new Date(`${employee.hireDate}T00:00:00.000Z`) : null,
+    employmentStatus: ({ Active: "ACTIVE", Locked: "LOCKED", Inactive: "INACTIVE" } as const)[employee.employmentStatus ?? (employee.locked ? "Locked" : "Active")],
+    attendancePolicy: employee.attendancePolicy || null,
+    leavePolicy: employee.leavePolicy || null,
+    remainingLeaveDays: Math.max(0, Number(employee.remainingLeaveDays) || 0),
+    locked: employee.locked
+  };
+}
+
+async function addDatabaseAudit(actorId: string, action: string, targetId: string) {
+  await prisma.auditLog.create({ data: { id: randomUUID(), actorId, action, targetId, success: true } });
+}
 function toEmployeeExportRows(sourceUsers: User[]) {
   return [
     ["Employee code", "Name", "Email", "Role", "Department", "Position", "Manager", "Hire date", "Status"],
@@ -1216,7 +1138,7 @@ function toEmployeeExportRows(sourceUsers: User[]) {
       employee.role,
       employee.subtitle,
       employee.position ?? "",
-      users.find((manager) => manager.id === employee.managerId)?.name ?? "",
+      sourceUsers.find((manager) => manager.id === employee.managerId)?.name ?? "",
       employee.hireDate ?? "",
       employee.locked || employee.employmentStatus === "Locked" ? "Locked" : employee.employmentStatus ?? "Active"
     ])
@@ -1251,7 +1173,6 @@ function validateLeaveRequestBody(body: { type?: LeaveType; startDate?: string; 
   if (!body.startDate || !body.endDate) return "Leave dates are required";
   if (calculateLeaveDays(body.startDate, body.endDate) <= 0) return "Invalid leave date range";
   if (leaveWorkflowConfig.attachmentRequiredForSickLeave && body.type === "Sick Leave" && !body.attachmentName && !body.attachment?.name) return "Attachment is required for sick leave";
-  if (!allowDraft && hasLeaveOverlap(leaveRequests, employeeId, body.startDate, body.endDate, ignoredRequestId)) return "Leave request overlaps with an existing request";
   return "";
 }
 
@@ -1507,17 +1428,95 @@ function escapePdfText(value: string) {
     .replace(/\)/g, "\\)");
 }
 
-function getScopedNotifications(user: { id: string; role: UserRole }) {
-  return notifications.filter((notification) => canViewNotification(user, notification));
+function apiRoleToDatabaseRole(role: UserRole) {
+  return ({ Employee: "EMPLOYEE", Manager: "MANAGER", HR: "HR", Payroll: "PAYROLL", Admin: "ADMIN" } as const)[role];
 }
 
-function canViewNotification(user: { id: string; role: UserRole }, notification: AppNotification) {
-  if (user.role === "Admin") return true;
-  if (notification.recipientId === user.id) return true;
-  if (notification.recipientRole === user.role) return true;
-  return false;
+function databaseNotificationToApi(record: PrismaNotification): AppNotification {
+  const emailStatus = { NOT_SENT: "Not sent", SENT: "Sent", FAILED: "Failed" } as const;
+  return { id: record.id, recipientId: record.recipientId ?? undefined, recipientRole: record.recipientRole ? databaseRoleToApiRole(record.recipientRole) : undefined, title: record.title, message: record.message, category: record.category.toLowerCase() as AppNotification["category"], read: record.read, createdAt: record.createdAt.toISOString(), emailStatus: emailStatus[record.emailStatus], retryCount: record.retryCount };
 }
 
+function databaseNotificationScope(user: { id: string; role: UserRole }) {
+  if (user.role === "Admin") return {};
+  return { OR: [{ recipientId: user.id }, { recipientRole: apiRoleToDatabaseRole(user.role) }] };
+}
+
+async function getDatabaseNotifications(user: { id: string; role: UserRole }) {
+  const records = await prisma.notification.findMany({ where: databaseNotificationScope(user), orderBy: { createdAt: "desc" } });
+  return records.map(databaseNotificationToApi);
+}
+
+function canViewDatabaseNotification(user: { id: string; role: UserRole }, notification: PrismaNotification) {
+  return user.role === "Admin" || notification.recipientId === user.id || notification.recipientRole === apiRoleToDatabaseRole(user.role);
+}
+
+function databaseHelpArticleToApi(record: PrismaHelpArticle): HelpArticle {
+  const category = { FAQ: "faq", CHECK_IN: "check-in", LEAVE: "leave", ADJUSTMENT: "adjustment", PAYROLL: "payroll" } as const;
+  return { id: record.id, title: record.title, category: category[record.category], body: record.body, allowedRoles: record.allowedRoles.map(databaseRoleToApiRole) };
+}
+
+function databaseSupportTicketToApi(record: PrismaSupportTicket & { requester: PrismaUser }) {
+  const status = { OPEN: "Open", IN_PROGRESS: "In Progress", RESOLVED: "Resolved" } as const;
+  return { id: record.id, requesterId: record.requesterId, requesterName: record.requester.name, subject: record.subject, message: record.message, status: status[record.status], createdAt: record.createdAt.toISOString() };
+}
+async function getDatabaseSystemSettings(): Promise<SystemSettings> {
+  const [record, schedules, holidays, permissions] = await Promise.all([
+    prisma.systemSetting.upsert({ where: { id: "default" }, update: {}, create: { id: "default" } }),
+    prisma.workSchedule.findMany({ orderBy: { createdAt: "asc" } }),
+    prisma.holiday.findMany({ orderBy: { startDate: "asc" } }),
+    prisma.rolePermission.findMany({ orderBy: { permission: "asc" } })
+  ]);
+  const roles: SystemSettings["roles"] = { Employee: [], Manager: [], HR: [], Payroll: [], Admin: [] };
+  permissions.forEach((permission) => roles[databaseRoleToApiRole(permission.role)].push(permission.permission));
+  return {
+    attendancePolicy: { standardStartTime: record.standardStartTime, standardEndTime: record.standardEndTime, lateGraceMinutes: record.lateGraceMinutes, earlyLeaveGraceMinutes: record.earlyLeaveGraceMinutes, overtimeAfterHours: record.overtimeAfterHours, requireLocation: record.requireLocation },
+    leavePolicy: { defaultAnnualLeaveDays: Number(record.defaultAnnualLeaveDays), attachmentRequiredForSickLeave: record.attachmentRequiredForSickLeave, requireHrApproval: record.requireHrApproval, blockAnnualLeaveOverBalance: record.blockAnnualLeaveOverBalance },
+    workSchedules: schedules.map((schedule) => ({ id: schedule.id, startTime: schedule.startTime, morningEndTime: schedule.morningEndTime, afternoonStartTime: schedule.afternoonStartTime, endTime: schedule.endTime, breakMinutes: schedule.breakMinutes, workDays: schedule.workDays })),
+    holidays: holidays.map((holiday) => ({ id: holiday.id, name: holiday.name, startDate: holiday.startDate.toISOString().slice(0, 10), endDate: holiday.endDate.toISOString().slice(0, 10), paid: holiday.paid })),
+    roles,
+    notifications: { inAppEnabled: record.inAppEnabled, emailEnabled: record.emailEnabled, managerDigestEnabled: record.managerDigestEnabled, payrollReminderEnabled: record.payrollReminderEnabled },
+    payrollExport: { defaultFormat: record.defaultPayrollExportFormat === "pdf" ? "pdf" : "excel", includeWarnings: record.includePayrollWarnings, lockRequiresResolvedLogs: record.lockRequiresResolvedLogs },
+    security: { minPasswordLength: record.minPasswordLength, sessionTimeoutMinutes: record.sessionTimeoutMinutes, allowSelfRegistration: record.allowSelfRegistration, requireTwoFactor: record.requireTwoFactor },
+    integrations: { calendarProvider: record.calendarProvider ?? "", payrollProvider: record.payrollProvider ?? "", webhookUrl: record.webhookUrl ?? "" },
+    audit: { enabled: record.auditEnabled, retentionDays: record.auditRetentionDays }
+  };
+}
+
+async function saveDatabaseSystemSettings(next: SystemSettings, changed: Partial<SystemSettings>) {
+  await prisma.$transaction(async (transaction) => {
+    await transaction.systemSetting.upsert({ where: { id: "default" }, update: systemSettingDatabaseData(next), create: { id: "default", ...systemSettingDatabaseData(next) } });
+    if (changed.workSchedules) {
+      await transaction.workSchedule.deleteMany();
+      if (next.workSchedules.length > 0) await transaction.workSchedule.createMany({ data: next.workSchedules.map((schedule) => ({ id: schedule.id, name: schedule.id, startTime: schedule.startTime, morningEndTime: schedule.morningEndTime, afternoonStartTime: schedule.afternoonStartTime, endTime: schedule.endTime, breakMinutes: schedule.breakMinutes, workDays: schedule.workDays })) });
+    }
+    if (changed.holidays) {
+      await transaction.holiday.deleteMany();
+      if (next.holidays.length > 0) await transaction.holiday.createMany({ data: next.holidays.map((holiday) => ({ id: holiday.id, name: holiday.name, startDate: dateOnlyValue(holiday.startDate), endDate: dateOnlyValue(holiday.endDate), paid: holiday.paid })) });
+    }
+    if (changed.roles) {
+      await transaction.rolePermission.deleteMany();
+      const rows = Object.entries(next.roles).flatMap(([role, permissions]) => permissions.map((permission) => ({ role: apiRoleToDatabaseRole(role as UserRole), permission })));
+      if (rows.length > 0) await transaction.rolePermission.createMany({ data: rows });
+    }
+    if (changed.leavePolicy) {
+      await transaction.leaveWorkflowConfig.upsert({ where: { id: "default" }, update: { requireHrApproval: next.leavePolicy.requireHrApproval, annualLeaveRequiresBalance: next.leavePolicy.blockAnnualLeaveOverBalance, attachmentRequiredForSickLeave: next.leavePolicy.attachmentRequiredForSickLeave, defaultAnnualLeaveDays: next.leavePolicy.defaultAnnualLeaveDays }, create: { id: "default", requireHrApproval: next.leavePolicy.requireHrApproval, annualLeaveRequiresBalance: next.leavePolicy.blockAnnualLeaveOverBalance, attachmentRequiredForSickLeave: next.leavePolicy.attachmentRequiredForSickLeave, defaultAnnualLeaveDays: next.leavePolicy.defaultAnnualLeaveDays } });
+    }
+  });
+  return getDatabaseSystemSettings();
+}
+
+function systemSettingDatabaseData(settings: SystemSettings) {
+  return { standardStartTime: settings.attendancePolicy.standardStartTime, standardEndTime: settings.attendancePolicy.standardEndTime, lateGraceMinutes: settings.attendancePolicy.lateGraceMinutes, earlyLeaveGraceMinutes: settings.attendancePolicy.earlyLeaveGraceMinutes, overtimeAfterHours: settings.attendancePolicy.overtimeAfterHours, requireLocation: settings.attendancePolicy.requireLocation, defaultAnnualLeaveDays: settings.leavePolicy.defaultAnnualLeaveDays, attachmentRequiredForSickLeave: settings.leavePolicy.attachmentRequiredForSickLeave, requireHrApproval: settings.leavePolicy.requireHrApproval, blockAnnualLeaveOverBalance: settings.leavePolicy.blockAnnualLeaveOverBalance, inAppEnabled: settings.notifications.inAppEnabled, emailEnabled: settings.notifications.emailEnabled, managerDigestEnabled: settings.notifications.managerDigestEnabled, payrollReminderEnabled: settings.notifications.payrollReminderEnabled, defaultPayrollExportFormat: settings.payrollExport.defaultFormat, includePayrollWarnings: settings.payrollExport.includeWarnings, lockRequiresResolvedLogs: settings.payrollExport.lockRequiresResolvedLogs, minPasswordLength: settings.security.minPasswordLength, sessionTimeoutMinutes: settings.security.sessionTimeoutMinutes, allowSelfRegistration: settings.security.allowSelfRegistration, requireTwoFactor: settings.security.requireTwoFactor, calendarProvider: settings.integrations.calendarProvider || null, payrollProvider: settings.integrations.payrollProvider || null, webhookUrl: settings.integrations.webhookUrl || null, auditEnabled: settings.audit.enabled, auditRetentionDays: settings.audit.retentionDays };
+}
+
+function syncSystemSettingsCache(settings: SystemSettings) {
+  Object.assign(systemSettings, structuredClone(settings));
+  leaveWorkflowConfig.defaultAnnualLeaveDays = settings.leavePolicy.defaultAnnualLeaveDays;
+  leaveWorkflowConfig.attachmentRequiredForSickLeave = settings.leavePolicy.attachmentRequiredForSickLeave;
+  leaveWorkflowConfig.requireHrApproval = settings.leavePolicy.requireHrApproval;
+  leaveWorkflowConfig.annualLeaveRequiresBalance = settings.leavePolicy.blockAnnualLeaveOverBalance;
+}
 function validateSystemSettings(body: Partial<SystemSettings>) {
   if (body.attendancePolicy) {
     if (!isTimeValue(body.attendancePolicy.standardStartTime) || !isTimeValue(body.attendancePolicy.standardEndTime)) return "Invalid attendance policy time";
@@ -1534,25 +1533,18 @@ function validateSystemSettings(body: Partial<SystemSettings>) {
   return "";
 }
 
-function updateSystemSettings(body: Partial<SystemSettings>) {
-  if (body.attendancePolicy) systemSettings.attendancePolicy = { ...systemSettings.attendancePolicy, ...body.attendancePolicy };
-  if (body.leavePolicy) {
-    systemSettings.leavePolicy = { ...systemSettings.leavePolicy, ...body.leavePolicy };
-    leaveWorkflowConfig.defaultAnnualLeaveDays = Math.max(0, Math.floor(systemSettings.leavePolicy.defaultAnnualLeaveDays));
-    leaveWorkflowConfig.attachmentRequiredForSickLeave = systemSettings.leavePolicy.attachmentRequiredForSickLeave;
-    leaveWorkflowConfig.requireHrApproval = systemSettings.leavePolicy.requireHrApproval;
-    leaveWorkflowConfig.annualLeaveRequiresBalance = systemSettings.leavePolicy.blockAnnualLeaveOverBalance;
-  }
-  if (body.workSchedules) systemSettings.workSchedules = body.workSchedules.map((schedule) => ({ ...schedule, breakMinutes: Math.max(0, toMinutes(schedule.afternoonStartTime) - toMinutes(schedule.morningEndTime)), workDays: schedule.workDays.filter((day) => Number.isInteger(day) && day >= 0 && day <= 6) }));
-  if (body.holidays) systemSettings.holidays = body.holidays;
-  if (body.roles) systemSettings.roles = { ...systemSettings.roles, ...body.roles };
-  if (body.notifications) systemSettings.notifications = { ...systemSettings.notifications, ...body.notifications };
-  if (body.payrollExport) systemSettings.payrollExport = { ...systemSettings.payrollExport, ...body.payrollExport };
-  if (body.security) systemSettings.security = { ...systemSettings.security, ...body.security, minPasswordLength: Math.max(6, Math.floor(body.security.minPasswordLength)), sessionTimeoutMinutes: Math.max(15, Math.floor(body.security.sessionTimeoutMinutes)) };
-  if (body.integrations) systemSettings.integrations = { ...systemSettings.integrations, ...body.integrations };
-  if (body.audit) systemSettings.audit = { ...systemSettings.audit, ...body.audit, retentionDays: Math.max(30, Math.floor(body.audit.retentionDays)) };
+function updateSystemSettings(target: SystemSettings, body: Partial<SystemSettings>) {
+  if (body.attendancePolicy) target.attendancePolicy = { ...target.attendancePolicy, ...body.attendancePolicy };
+  if (body.leavePolicy) target.leavePolicy = { ...target.leavePolicy, ...body.leavePolicy };
+  if (body.workSchedules) target.workSchedules = body.workSchedules.map((schedule) => ({ ...schedule, breakMinutes: Math.max(0, toMinutes(schedule.afternoonStartTime) - toMinutes(schedule.morningEndTime)), workDays: schedule.workDays.filter((day) => Number.isInteger(day) && day >= 0 && day <= 6) }));
+  if (body.holidays) target.holidays = body.holidays;
+  if (body.roles) target.roles = { ...target.roles, ...body.roles };
+  if (body.notifications) target.notifications = { ...target.notifications, ...body.notifications };
+  if (body.payrollExport) target.payrollExport = { ...target.payrollExport, ...body.payrollExport };
+  if (body.security) target.security = { ...target.security, ...body.security, minPasswordLength: Math.max(6, Math.floor(body.security.minPasswordLength)), sessionTimeoutMinutes: Math.max(15, Math.floor(body.security.sessionTimeoutMinutes)) };
+  if (body.integrations) target.integrations = { ...target.integrations, ...body.integrations };
+  if (body.audit) target.audit = { ...target.audit, ...body.audit, retentionDays: Math.max(30, Math.floor(body.audit.retentionDays)) };
 }
-
 function getChangedSettingGroups(current: SystemSettings, next: Partial<SystemSettings>) {
   return (Object.keys(next) as Array<keyof SystemSettings>).filter((group) => JSON.stringify(current[group]) !== JSON.stringify(next[group]));
 }
@@ -1601,34 +1593,72 @@ function normalizeAttachment(attachment: LeaveAttachment | undefined, actorId: s
   };
 }
 
-function addNotification(input: { recipientId?: string; recipientRole?: UserRole; title: string; message: string; category: AppNotification["category"] }) {
-  notifications.unshift({
-    id: "notif-" + Date.now() + "-" + Math.random().toString(36).slice(2, 6),
-    recipientId: input.recipientId,
-    recipientRole: input.recipientRole,
-    title: input.title,
-    message: input.message,
-    category: input.category,
-    read: false,
-    createdAt: new Date().toISOString(),
-    emailStatus: systemSettings.notifications.emailEnabled ? "Sent" : "Not sent",
-    retryCount: 0
+async function handleQuickAttendance(request: IncomingMessage, response: ServerResponse, action: "check-in" | "check-out") {
+  const body = await readJsonBody<{ employeeId?: string; phoneLast4?: string; pin?: string }>(request);
+  const employeeId = body.employeeId?.trim() ?? "";
+  const phoneLast4 = body.phoneLast4?.trim() ?? "";
+  const pin = body.pin?.trim() ?? "";
+  if (!employeeId || !/^\d{4}$/.test(phoneLast4) || !/^\d{4,6}$/.test(pin)) { sendJson(response, 400, { success: false, error: "Enter exactly 4 phone digits and a 4-6 digit PIN" }); return; }
+
+  const ipAddress = getRequestIp(request);
+  const rateKey = `${employeeId}:${ipAddress}`;
+  const now = Date.now();
+  const attempt = quickAttendanceAttempts.get(rateKey);
+  if (attempt?.blockedUntil && attempt.blockedUntil > now) { await addQuickAttendanceAudit(employeeId, action, request, false); sendJson(response, 429, { success: false, error: "Too many attempts. Please try again later" }); return; }
+
+  const employee = await prisma.user.findUnique({ where: { id: employeeId } });
+  const normalizedPhone = employee?.phone?.replace(/\D/g, "") ?? "";
+  const credentialsValid = Boolean(employee && !employee.locked && employee.employmentStatus === "ACTIVE" && employee.pinHash && normalizedPhone.slice(-4) === phoneLast4 && verifyPin(pin, employee.pinHash));
+  if (!credentialsValid || !employee) { recordQuickAttendanceFailure(rateKey, now); await addQuickAttendanceAudit(employeeId, action, request, false); sendJson(response, 401, { success: false, error: "Attendance verification details are incorrect" }); return; }
+
+  quickAttendanceAttempts.delete(rateKey);
+  if (action === "check-in") {
+    const scheduleError = getCheckInRestriction(new Date(), employee);
+    if (scheduleError) { await addQuickAttendanceAudit(employee.id, action, request, false); sendJson(response, 409, { success: false, error: scheduleError }); return; }
+    const currentSession = await prisma.attendanceSession.findUnique({ where: { employeeId: employee.id } });
+    if (currentSession) { await addQuickAttendanceAudit(employee.id, action, request, false); sendJson(response, 409, { success: false, error: "Active attendance session already exists" }); return; }
+    const checkInAt = new Date();
+    await prisma.attendanceSession.create({ data: { id: randomUUID(), employeeId: employee.id, checkInAt, device: request.headers["user-agent"] ?? "Browser device", ipAddress, location: "Quick check-in station" } });
+    await addQuickAttendanceAudit(employee.id, action, request, true);
+    sendJson(response, 201, { success: true, message: "Checked in successfully", data: { employeeId: employee.id, employeeName: employee.name, action, occurredAt: checkInAt.toISOString() } });
+    return;
+  }
+
+  const session = await prisma.attendanceSession.findUnique({ where: { employeeId: employee.id } });
+  if (!session) { await addQuickAttendanceAudit(employee.id, action, request, false); sendJson(response, 409, { success: false, error: "No active attendance session" }); return; }
+  const checkOutAt = new Date();
+  const attendance = calculateAttendance(session.checkInAt, checkOutAt, systemSettings);
+  await prisma.$transaction([
+    prisma.attendanceLog.create({ data: { id: randomUUID(), employeeId: employee.id, managerId: employee.managerId, workDate: dateOnlyValue(attendance.workDate), checkInAt: session.checkInAt, checkOutAt, totalMinutes: attendance.totalMinutes, overtimeMinutes: attendance.overtimeMinutes, status: attendance.status, adjustmentStatus: "NONE", payrollLocked: false } }),
+    prisma.attendanceSession.delete({ where: { employeeId: employee.id } })
+  ]);
+  await addQuickAttendanceAudit(employee.id, action, request, true);
+  sendJson(response, 200, { success: true, message: "Checked out successfully", data: { employeeId: employee.id, employeeName: employee.name, action, occurredAt: checkOutAt.toISOString() } });
+}
+function recordQuickAttendanceFailure(key: string, now: number) {
+  const current = quickAttendanceAttempts.get(key);
+  const failures = !current || now - current.windowStartedAt >= quickAttendanceWindowMs ? 1 : current.failures + 1;
+  quickAttendanceAttempts.set(key, {
+    failures,
+    windowStartedAt: !current || now - current.windowStartedAt >= quickAttendanceWindowMs ? now : current.windowStartedAt,
+    blockedUntil: failures >= quickAttendanceMaxFailures ? now + quickAttendanceWindowMs : 0
   });
 }
 
-function addAudit(actorId: string, action: string, targetId: string) {
-  auditLogs.unshift({
-    id: `audit-${Date.now()}`,
-    actorId,
-    action,
-    targetId,
-    createdAt: new Date().toISOString()
-  });
+async function addQuickAttendanceAudit(employeeId: string, action: "check-in" | "check-out", request: IncomingMessage, success: boolean) {
+  await prisma.auditLog.create({ data: { id: randomUUID(), actorId: employeeId || "unknown", action: action === "check-in" ? "QUICK_CHECK_IN" : "QUICK_CHECK_OUT", targetId: employeeId || "unknown", ipAddress: getRequestIp(request), userAgent: request.headers["user-agent"] ?? "Unknown", success } });
 }
 
-function requireUser(request: IncomingMessage, response: ServerResponse) {
+function databaseRoleToApiRole(role: string): UserRole {
+  return ({ EMPLOYEE: "Employee", MANAGER: "Manager", HR: "HR", PAYROLL: "Payroll", ADMIN: "Admin" } as Record<string, UserRole>)[role] ?? "Employee";
+}
+function getRequestIp(request: IncomingMessage) {
+  const forwarded = request.headers["x-forwarded-for"];
+  return (Array.isArray(forwarded) ? forwarded[0] : forwarded?.split(",")[0])?.trim() || request.socket.remoteAddress || "Unknown";
+}
+async function requireUser(request: IncomingMessage, response: ServerResponse) {
   const token = getBearerToken(request);
-  const user = token ? getUserByToken(token) : null;
+  const user = token ? await getUserByToken(token) : null;
 
   if (!user) {
     sendJson(response, 401, { error: "Unauthorized" });
@@ -1680,22 +1710,6 @@ function formatSummaryDate(date: Date) {
     day: "numeric",
     year: "numeric"
   });
-}
-
-function getThanksgivingDate(year: number) {
-  const novemberFirst = new Date(year, 10, 1);
-  const dayOfWeek = novemberFirst.getDay();
-  const firstThursdayDate = 1 + ((4 - dayOfWeek + 7) % 7);
-  return new Date(year, 10, firstThursdayDate + 21);
-}
-
-function getNextThanksgiving(baseDate: Date) {
-  const currentYearThanksgiving = getThanksgivingDate(baseDate.getFullYear());
-  if (baseDate <= currentYearThanksgiving) {
-    return currentYearThanksgiving;
-  }
-
-  return getThanksgivingDate(baseDate.getFullYear() + 1);
 }
 
 function formatTotalHours(totalSeconds: number) {
@@ -1808,19 +1822,17 @@ function readJsonBody<T>(request: IncomingMessage): Promise<T> {
 
 
 
-function getCheckInRestriction(now: Date, user: object) {
-  const isoDate = now.toISOString().slice(0, 10);
-  if (systemSettings.holidays.some((holiday) => isoDate >= holiday.startDate && isoDate <= holiday.endDate)) return "Check-in is unavailable on a holiday";
+function getCheckInRestriction(now: Date, _user: object) {
+  const local = getLocalDateContext(now);
+  if (systemSettings.holidays.some((holiday) => local.isoDate >= holiday.startDate && local.isoDate <= holiday.endDate)) return "Check-in is unavailable on a holiday";
   const schedule = systemSettings.workSchedules[0];
-  if (!schedule || !schedule.workDays.includes(now.getDay())) return "Today is not a scheduled workday";
-  const currentMinutes = now.getHours() * 60 + now.getMinutes();
+  if (!schedule || !schedule.workDays.includes(local.dayOfWeek)) return "Today is not a scheduled workday";
   const startMinutes = toMinutes(schedule.startTime);
   const endMinutes = toMinutes(schedule.endTime);
-  if (currentMinutes < startMinutes) return `Check-in opens at ${schedule.startTime}`;
-  if (currentMinutes > endMinutes) return `Check-in is closed after ${schedule.endTime}`;
+  if (local.minutes < startMinutes) return `Check-in opens at ${schedule.startTime}`;
+  if (local.minutes > endMinutes) return `Check-in is closed after ${schedule.endTime}`;
   return "";
 }
-
 function toMinutes(value: string) {
   const [hours, minutes] = value.split(":").map(Number);
   return hours * 60 + minutes;

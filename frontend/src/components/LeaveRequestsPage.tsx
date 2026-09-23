@@ -139,7 +139,7 @@ export function LeaveRequestsPage({
       employeeId: user.id,
       employeeName: user.name,
       department: user.subtitle,
-      managerId: user.role === "Manager" ? "u-admin" : "u-manager",
+      managerId: user.managerId,
       type: form.type,
       startDate: form.startDate,
       endDate: form.endDate,

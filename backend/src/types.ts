@@ -8,6 +8,7 @@ export type User = {
   subtitle: string;
   employeeCode?: string;
   phone?: string;
+  pinHash?: string;
   position?: string;
   managerId?: string;
   hireDate?: string;
@@ -239,4 +240,7 @@ export type AuditLog = {
   action: string;
   targetId: string;
   createdAt: string;
+  ipAddress?: string;
+  userAgent?: string;
+  success?: boolean;
 };

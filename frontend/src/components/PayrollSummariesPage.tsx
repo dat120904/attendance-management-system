@@ -45,7 +45,6 @@ export function PayrollSummariesPage({ authToken, language, logs, periods, onLog
     noVersions: t.noPayrollVersions,
     noPeriods: t.noPayrollPeriods,
     payrollDenied: t.payrollDenied,
-    currentDemoPeriod: t.currentDemoPeriod,
     standard: t.standardHours,
     worked: t.workedHours,
     overtime: t.overtimeHours,
@@ -107,11 +106,7 @@ export function PayrollSummariesPage({ authToken, language, logs, periods, onLog
   }, [authToken, user]);
 
   const sourcePeriods = remotePeriods ?? periods;
-  const displayPeriods = useMemo(() => {
-    if (sourcePeriods.length > 0) return sourcePeriods;
-    return [buildLocalPayrollPeriod({ name: labels.currentDemoPeriod, startDate: form.startDate, endDate: form.endDate }, logs, settings, "system", "seeded", t, "payroll-current-demo")];
-  }, [form.endDate, form.startDate, logs, settings, sourcePeriods]);
-  const scopedPeriods = useMemo(() => displayPeriods.map((period) => scopePayrollPeriod(period, logs, user)), [displayPeriods, logs, user]);
+  const scopedPeriods = useMemo(() => sourcePeriods.map((period) => scopePayrollPeriod(period, logs, user)), [sourcePeriods, logs, user]);
   const selectedPeriod = scopedPeriods.find((period) => period.id === selectedPeriodId) ?? scopedPeriods[0] ?? null;
   const totals = selectedPeriod ? totalRows(selectedPeriod.rows) : null;
 
@@ -320,8 +315,7 @@ export function PayrollSummariesPage({ authToken, language, logs, periods, onLog
 }
 
 
-function translatePeriodName(period: PayrollPeriod, t: Translation) {
-  if (period.id === "payroll-current-demo" || period.name === "Current payroll period" || period.name === "Kỳ công hiện tại") return t.currentDemoPeriod;
+function translatePeriodName(period: PayrollPeriod, _t: Translation) {
   return period.name;
 }
 

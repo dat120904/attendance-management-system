@@ -1,6 +1,6 @@
-import type { LeaveWorkflowConfig, SystemSettings } from "./types.js";
+import type { LeaveWorkflowConfig, SystemSettings } from "../types";
 
-export const leaveWorkflowConfig: LeaveWorkflowConfig = {
+export const emptyLeaveWorkflow: LeaveWorkflowConfig = {
   requireHrApproval: false,
   annualLeaveRequiresBalance: true,
   allowEmployeeCancelBeforeManager: true,
@@ -8,7 +8,7 @@ export const leaveWorkflowConfig: LeaveWorkflowConfig = {
   defaultAnnualLeaveDays: 0
 };
 
-export const systemSettings: SystemSettings = {
+export const emptySystemSettings: SystemSettings = {
   attendancePolicy: {
     standardStartTime: "",
     standardEndTime: "",
