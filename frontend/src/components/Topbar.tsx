@@ -117,5 +117,9 @@ function translateNotificationTitle(notification: AppNotification, t: Translatio
 
 function translateNotificationMessage(notification: AppNotification, t: Translation, name: string) {
   if (notification.id === "notif-welcome") return t.welcomeNotificationBody.replace("{name}", name);
-  return notification.message.replace("Your Workforce Pro workspace is ready.", t.welcomeNotificationBody.replace("{name}", name)).replace("Your annual leave request was approved.", t.leaveApproved).replace("Linh has an early leave log pending review.", `${t.earlyLeave}: Linh`).replace("Your workday is nearly complete. Remember to check out.", t.confirmCheckOut).replace("A team member requested attendance adjustment approval.", t.adjustmentRequested).replace("Current payroll period has items waiting for confirmation.", t.pendingAdjustmentWarningTemplate.replace("{count}", "2"));
+  return notification.message
+    .replace("Your Workforce Pro workspace is ready.", t.welcomeNotificationBody.replace("{name}", name))
+    .replace("Your annual leave request was approved.", t.leaveApproved)
+    .replace("Your workday is nearly complete. Remember to check out.", t.confirmCheckOut)
+    .replace("A team member requested attendance adjustment approval.", t.adjustmentRequested);
 }

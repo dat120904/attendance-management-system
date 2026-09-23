@@ -1,5 +1,4 @@
 import { useEffect, useMemo, useState } from "react";
-import { dashboardData } from "../data/mockData";
 import type { Language, Translation } from "../i18n";
 import { translateRole } from "../utils/localize";
 import type { AppPage, AttendanceLog, AttendanceSession, DashboardMetric, SystemSettings, User } from "../types";
@@ -13,6 +12,8 @@ type DashboardProps = {
   isAttendanceBusy: boolean;
   language: Language;
   logs: AttendanceLog[];
+  managerAlerts: string[];
+  payrollReadiness: string | null;
   settings: SystemSettings;
   onCheckIn: () => void;
   onCheckOut: () => void;
@@ -28,6 +29,8 @@ export function Dashboard({
   isAttendanceBusy,
   language,
   logs,
+  managerAlerts,
+  payrollReadiness,
   settings,
   onCheckIn,
   onCheckOut,
@@ -69,7 +72,7 @@ export function Dashboard({
     if (user.role === "Manager" || user.role === "HR" || user.role === "Admin") {
       base.push({
         label: t.teamAlerts,
-        value: `${dashboardData.managerAlerts.length}`,
+        value: `${managerAlerts.length}`,
         suffix: t.open,
         helper: t.teamAlertsText,
         icon: "warning"
@@ -79,14 +82,14 @@ export function Dashboard({
     if (user.role === "Payroll" || user.role === "Admin") {
       base.push({
         label: t.payrollReadiness,
-        value: dashboardData.payrollReadiness,
+        value: payrollReadiness ?? "--",
         helper: t.currentPayrollPeriod,
         icon: "clock"
       });
     }
 
     return base;
-  }, [t, user]);
+  }, [managerAlerts.length, payrollReadiness, t, user]);
 
   const roleOverview = getRoleOverview(user.role, t);
   const payrollIssues = getPayrollIssues(logs, t);

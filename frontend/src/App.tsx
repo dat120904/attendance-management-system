@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { AttendanceLogsPage } from "./components/AttendanceLogsPage";
 import { AuthPage } from "./components/AuthPage";
+import { ResetPasswordPage } from "./components/ResetPasswordPage";
 import { Dashboard } from "./components/Dashboard";
 import { LeaveRequestsPage } from "./components/LeaveRequestsPage";
 import { PayrollSummariesPage } from "./components/PayrollSummariesPage";
@@ -10,19 +11,18 @@ import { HelpCenterPage } from "./components/HelpCenterPage";
 import { SettingsPage } from "./components/SettingsPage";
 import { Sidebar } from "./components/Sidebar";
 import { Topbar } from "./components/Topbar";
-import { fetchNotifications, markAllNotificationsRead, markNotificationRead, retryNotificationEmail, loginWithPassword, registerAccount } from "./api";
-import { dashboardData, demoUsers, helpArticles as initialHelpArticles, leaveRequests as initialLeaveRequests, leaveWorkflowConfig as initialLeaveWorkflowConfig, notifications as initialNotifications, payrollPeriods as initialPayrollPeriods, supportTickets as initialSupportTickets, systemSettings as initialSystemSettings } from "./data/mockData";
+import { checkIn, checkOut, fetchDashboard, fetchNotifications, fetchSettings, logoutSession, markAllNotificationsRead, markNotificationRead, retryNotificationEmail, loginWithPassword, registerAccount, requestPasswordReset, resetPassword, submitQuickAttendance } from "./api";
+import { emptyLeaveWorkflow, emptySystemSettings } from "./data/defaults";
 import type { Language, Translation } from "./i18n";
 import { translations } from "./i18n";
 import type { AppPage, AppNotification, AttendanceLog, AttendanceSession, HelpArticle, LeaveRequest, LeaveWorkflowConfig, PayrollPeriod, SupportTicket, SystemSettings, User } from "./types";
-import { formatClockTime, formatLogDate, formatTotalHours } from "./utils/time";
 import { canAccessPage } from "./utils/permissions";
 
 export default function App() {
-  const [users, setUsers] = useState<User[]>(demoUsers);
-  const [localPasswords, setLocalPasswords] = useState<Record<string, string>>({});
+  const [users, setUsers] = useState<User[]>([]);
   const [user, setUser] = useState<User | null>(null);
   const [authToken, setAuthToken] = useState<string | null>(null);
+  const [resetToken, setResetToken] = useState<string | null>(() => new URLSearchParams(window.location.search).get("resetToken"));
   const [language, setLanguage] = useState<Language>("en");
   const [activePage, setActivePage] = useState<AppPage>("dashboard");
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
@@ -37,37 +37,43 @@ export default function App() {
     ipAddress: "",
     location: ""
   });
-  const [logs, setLogs] = useState<AttendanceLog[]>(dashboardData.logs);
-  const [leaveRequests, setLeaveRequests] = useState<LeaveRequest[]>(initialLeaveRequests);
-  const [leaveWorkflowConfig, setLeaveWorkflowConfig] = useState<LeaveWorkflowConfig>(initialLeaveWorkflowConfig);
-  const [payrollPeriods, setPayrollPeriods] = useState<PayrollPeriod[]>(initialPayrollPeriods);
-  const [systemSettings, setSystemSettings] = useState<SystemSettings>(initialSystemSettings);
-  const [notifications, setNotifications] = useState<AppNotification[]>(initialNotifications);
-  const [helpArticles] = useState<HelpArticle[]>(initialHelpArticles);
-  const [, setSupportTickets] = useState<SupportTicket[]>(initialSupportTickets);
+  const [logs, setLogs] = useState<AttendanceLog[]>([]);
+  const [leaveRequests, setLeaveRequests] = useState<LeaveRequest[]>([]);
+  const [leaveWorkflowConfig, setLeaveWorkflowConfig] = useState<LeaveWorkflowConfig>(emptyLeaveWorkflow);
+  const [payrollPeriods, setPayrollPeriods] = useState<PayrollPeriod[]>([]);
+  const [systemSettings, setSystemSettings] = useState<SystemSettings>(emptySystemSettings);
+  const [notifications, setNotifications] = useState<AppNotification[]>([]);
+  const [helpArticles] = useState<HelpArticle[]>([]);
+  const [, setSupportTickets] = useState<SupportTicket[]>([]);
+  const [managerAlerts, setManagerAlerts] = useState<string[]>([]);
+  const [payrollReadiness, setPayrollReadiness] = useState<string | null>(null);
   const [attendanceMessage, setAttendanceMessage] = useState("");
   const [attendanceError, setAttendanceError] = useState("");
   const [isAttendanceBusy, setIsAttendanceBusy] = useState(false);
   const t = translations[language];
 
-  async function handleLogin(email: string, password: string) {
-    const fallbackUser = users.find((item) => item.email === email) ?? users[0];
-    const expectedPassword = localPasswords[email] ?? "password";
+  async function loadDashboard(token: string, authenticatedUser?: User) {
+    const result = await fetchDashboard(token);
+    setLogs(result.logs);
+    setManagerAlerts(result.managerAlerts);
+    setPayrollReadiness(result.payrollReadiness);
+    const settingsResult = await fetchSettings(token);
+    setSystemSettings(settingsResult.settings);
+    if (authenticatedUser) setUser({ ...authenticatedUser, remainingLeaveDays: result.remainingLeaveDays });
+    setAttendanceSession(result.session ? { status: "working", checkInAt: new Date(result.session.checkInAt), checkOutAt: null, elapsedSeconds: result.sessionSeconds, device: result.session.device, ipAddress: result.session.ipAddress, location: result.session.location } : { status: "not-started", checkInAt: null, checkOutAt: null, elapsedSeconds: 0, device: "", ipAddress: "", location: "" });
+  }
 
+  async function handleLogin(email: string, password: string) {
     try {
-      const result = await loginWithPassword(email, password);
+      const result = await loginWithPassword(email.trim().toLowerCase(), password);
       setAuthToken(result.token);
       setUser(result.user);
       setActivePage("dashboard");
+      await loadDashboard(result.token, result.user);
       return { ok: true };
     } catch (error) {
-      if (fallbackUser && password === expectedPassword) {
-        setAuthToken(null);
-        setUser(fallbackUser);
-        setActivePage("dashboard");
-        return { ok: true };
-      }
-
+      setAuthToken(null);
+      setUser(null);
       return { ok: false, message: error instanceof Error ? error.message : "Login failed" };
     }
   }
@@ -76,178 +82,67 @@ export default function App() {
     const name = form.name.trim();
     const email = form.email.trim().toLowerCase();
     const department = form.department.trim() || roleDepartment(form.role);
-
-    if (!name || !email || !form.password || !form.confirmPassword) {
-      return { ok: false, message: t.requiredFields };
-    }
-
-    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
-      return { ok: false, message: t.invalidEmail };
-    }
-
-    if (form.password.length < 6) {
-      return { ok: false, message: t.passwordMinLength };
-    }
-
-    if (form.password !== form.confirmPassword) {
-      return { ok: false, message: t.passwordMismatch };
-    }
-
-    if (users.some((item) => item.email.toLowerCase() === email)) {
-      return { ok: false, message: t.emailAlreadyExists };
-    }
-
-    const fallbackUser: User = {
-      id: `u-register-${Date.now()}`,
-      name,
-      email,
-      role: form.role,
-      subtitle: department,
-      remainingLeaveDays: 12
-    };
-
+    if (!name || !email || !form.password || !form.confirmPassword) return { ok: false, message: t.requiredFields };
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return { ok: false, message: t.invalidEmail };
+    if (form.password.length < 6) return { ok: false, message: t.passwordMinLength };
+    if (form.password !== form.confirmPassword) return { ok: false, message: t.passwordMismatch };
     try {
       const result = await registerAccount({ ...form, name, email, department });
-      setUsers((current) => [...current, result.user]);
-      setLocalPasswords((current) => ({ ...current, [email]: form.password }));
+      setUsers((current) => [...current.filter((item) => item.id !== result.user.id), result.user]);
       setAuthToken(result.token);
       setUser(result.user);
       setActivePage("dashboard");
+      await loadDashboard(result.token, result.user);
       return { ok: true };
-    } catch {
-      setUsers((current) => [...current, fallbackUser]);
-      setLocalPasswords((current) => ({ ...current, [email]: form.password }));
-      setAuthToken(null);
-      setUser(fallbackUser);
-      setActivePage("dashboard");
-      return { ok: true };
+    } catch (error) {
+      return { ok: false, message: error instanceof Error ? error.message : t.registerFailed };
     }
   }
-
-  function startSessionForUser(nextUser: User) {
-    const scheduleError = getCheckInRestriction(new Date(), nextUser, systemSettings, t);
-    if (scheduleError) {
-      setAttendanceError(scheduleError);
-      setAttendanceMessage("");
-      return scheduleError;
-    }
-    const now = new Date();
-    setAuthToken(null);
-    setUser(nextUser);
-    setActivePage("dashboard");
-    setAttendanceSession({
-      status: "working",
-      checkInAt: now,
-      checkOutAt: null,
-      elapsedSeconds: 0,
-      device: t.browserDevice,
-      ipAddress: t.officeNetwork,
-      location: t.headquarters
-    });
-    setAttendanceMessage(t.checkInSuccess);
-    setAttendanceError("");
-    return "";
+  async function handleForgotPassword(email: string) {
+    await requestPasswordReset(email);
   }
 
-  function handleQuickCheckIn(nextUser: User) {
-    return startSessionForUser(nextUser);
+  async function handlePasswordReset(password: string, confirmPassword: string) {
+    if (!resetToken) throw new Error("Invalid or expired reset link");
+    await resetPassword(resetToken, password, confirmPassword);
   }
 
-  function handleNewEmployeeCheckIn(name: string) {
-    const trimmedName = name.trim();
-    if (!trimmedName) return;
-
-    const existingUser = users.find((item) => item.name.toLowerCase() === trimmedName.toLowerCase());
-    if (existingUser) {
-      startSessionForUser(existingUser);
-      return;
-    }
-
-    const newUser: User = {
-      id: `u-new-${Date.now()}`,
-      name: trimmedName,
-      email: `${slugify(trimmedName)}@workforce.local`,
-      role: "Employee",
-      subtitle: "Employee",
-      remainingLeaveDays: 12
-    };
-
-    setUsers((current) => [...current, newUser]);
-    startSessionForUser(newUser);
+  function finishPasswordReset() {
+    window.history.replaceState({}, "", window.location.pathname);
+    setResetToken(null);
+  }
+  async function handleQuickAttendance(employeeId: string, action: "check-in" | "check-out", phoneLast4: string, pin: string) {
+    return submitQuickAttendance({ employeeId, action, phoneLast4, pin });
   }
 
-  function handleCheckIn() {
-    if (attendanceSession.status === "working") {
-      setAttendanceError(t.duplicateCheckIn);
-      return;
-    }
-
-    const scheduleError = getCheckInRestriction(new Date(), user, systemSettings, t);
-    if (scheduleError) {
-      setAttendanceError(scheduleError);
-      return;
-    }
-
-    setIsAttendanceBusy(true);
-    const now = new Date();
-    window.setTimeout(() => {
-      setAttendanceSession({
-        status: "working",
-        checkInAt: now,
-        checkOutAt: null,
-        elapsedSeconds: 0,
-        device: t.browserDevice,
-        ipAddress: t.officeNetwork,
-        location: t.headquarters
-      });
+  async function handleCheckIn() {
+    if (!authToken) { setAttendanceError("Authentication is required"); return; }
+    setIsAttendanceBusy(true); setAttendanceError(""); setAttendanceMessage("");
+    try {
+      const result = await checkIn(authToken);
+      setAttendanceSession({ status: "working", checkInAt: new Date(result.session.checkInAt), checkOutAt: null, elapsedSeconds: 0, device: result.session.device, ipAddress: result.session.ipAddress, location: result.session.location });
       setAttendanceMessage(t.checkInSuccess);
-      setAttendanceError("");
-      setIsAttendanceBusy(false);
-    }, 300);
+    } catch (error) { setAttendanceError(error instanceof Error ? error.message : t.duplicateCheckIn); }
+    finally { setIsAttendanceBusy(false); }
   }
 
-  function handleCheckOut() {
-    if (attendanceSession.status !== "working" || !attendanceSession.checkInAt) {
-      setAttendanceError(t.checkOutWithoutCheckIn);
-      return;
-    }
-
-    setIsAttendanceBusy(true);
-    const now = new Date();
-    const totalSeconds = Math.max(0, Math.floor((now.getTime() - attendanceSession.checkInAt.getTime()) / 1000));
-    const newLog: AttendanceLog = {
-      id: `log-${now.getTime()}`,
-      employeeId: user?.id,
-      employeeName: user?.name ?? "Unknown",
-      department: roleDepartment(user?.role),
-      managerId: "u-admin",
-      workDate: now.toISOString().slice(0, 10),
-      date: formatLogDate(now),
-      checkIn: formatClockTime(attendanceSession.checkInAt),
-      checkOut: formatClockTime(now),
-      totalHours: formatTotalHours(totalSeconds),
-      overtime: "0h 0m",
-      status: "On Time",
-      adjustmentStatus: "None",
-      payrollLocked: false
-    };
-
-    window.setTimeout(() => {
-      setAttendanceSession((current) => ({
-        ...current,
-        status: "checked-out",
-        checkOutAt: now,
-        elapsedSeconds: totalSeconds
-      }));
-      setLogs((current) => [newLog, ...current].slice(0, 5));
+  async function handleCheckOut() {
+    if (!authToken) { setAttendanceError("Authentication is required"); return; }
+    setIsAttendanceBusy(true); setAttendanceError(""); setAttendanceMessage("");
+    try {
+      const result = await checkOut(authToken);
+      setAttendanceSession((current) => ({ ...current, status: "checked-out", checkOutAt: new Date(), elapsedSeconds: current.checkInAt ? Math.max(0, Math.floor((Date.now() - current.checkInAt.getTime()) / 1000)) : 0 }));
+      setLogs((current) => [result.log, ...current.filter((log) => log.id !== result.log.id)].slice(0, 50));
       setAttendanceMessage(t.checkOutSuccess);
-      setAttendanceError("");
-      setIsAttendanceBusy(false);
-    }, 300);
+    } catch (error) { setAttendanceError(error instanceof Error ? error.message : t.checkOutWithoutCheckIn); }
+    finally { setIsAttendanceBusy(false); }
+  }
+  if (!user && resetToken) {
+    return <ResetPasswordPage language={language} onLanguageChange={setLanguage} onReset={handlePasswordReset} onComplete={finishPasswordReset} t={t} />;
   }
 
   if (!user) {
-    return <AuthPage language={language} onLanguageChange={setLanguage} onLogin={handleLogin} onNewEmployeeCheckIn={handleNewEmployeeCheckIn} onQuickCheckIn={handleQuickCheckIn} onRegister={handleRegister} t={t} users={users} />;
+    return <AuthPage language={language} onLanguageChange={setLanguage} onLogin={handleLogin} onQuickAttendance={handleQuickAttendance} onForgotPassword={handleForgotPassword} onRegister={handleRegister} t={t} />;
   }
 
   function scopedLocalNotifications(currentUser: User | null = user) {
@@ -260,7 +155,7 @@ export default function App() {
       const result = await fetchNotifications(token);
       setNotifications(result.notifications);
     } catch {
-      // Keep local demo notifications when backend is not running.
+      setNotifications([]);
     }
   }
 
@@ -295,7 +190,7 @@ export default function App() {
         const result = await retryNotificationEmail(authToken, notificationId);
         setNotifications((current) => current.map((item) => item.id === notificationId ? result.notification : item));
       } catch {
-        // Local retry state is enough for demo mode.
+        await loadNotifications(authToken);
       }
     }
   }
@@ -312,8 +207,8 @@ export default function App() {
   function confirmAttendanceAction() {
     const action = pendingAttendanceAction;
     setPendingAttendanceAction(null);
-    if (action === "check-out") handleCheckOut();
-    if (action === "check-in") handleCheckIn();
+    if (action === "check-out") void handleCheckOut();
+    if (action === "check-in") void handleCheckIn();
   }
 
   function requestLogout() {
@@ -321,13 +216,16 @@ export default function App() {
     setIsLogoutConfirmationOpen(true);
   }
 
-  function handleLogout() {
+  async function handleLogout() {
     setIsLogoutConfirmationOpen(false);
+    if (authToken) {
+      try { await logoutSession(authToken); } catch { /* Clear local authentication even if the request fails. */ }
+    }
     setAuthToken(null);
     setUser(null);
     setActivePage("dashboard");
+    setAttendanceSession({ status: "not-started", checkInAt: null, checkOutAt: null, elapsedSeconds: 0, device: "", ipAddress: "", location: "" });
   }
-
   function handleNavigate(page: AppPage) {
     if (!user || canAccessPage(user.role, page)) {
       setActivePage(page);
@@ -367,6 +265,8 @@ export default function App() {
             isAttendanceBusy={isAttendanceBusy}
             language={language}
             logs={logs}
+            managerAlerts={managerAlerts}
+            payrollReadiness={payrollReadiness}
             settings={systemSettings}
             onCheckIn={requestAttendanceAction}
             onCheckOut={requestAttendanceAction}
@@ -415,7 +315,7 @@ export default function App() {
         )}
         {activePage === "settings" && <SettingsPage authToken={authToken} settings={systemSettings} onSettingsChange={setSystemSettings} t={t} user={user} />}
         {activePage === "helpCenter" && <HelpCenterPage articles={helpArticles} authToken={authToken} onTicketCreated={handleSupportTicketCreated} t={t} user={user} />}
-        {activePage === "profile" && <ProfilePage t={t} user={user} />}
+        {activePage === "profile" && <ProfilePage authToken={authToken ?? ""} t={t} user={user} />}
         {activePage !== "dashboard" && activePage !== "attendanceLogs" && activePage !== "leaveRequests" && activePage !== "payrollSummaries" && activePage !== "employeeManagement" && activePage !== "settings" && activePage !== "helpCenter" && activePage !== "profile" && (
           <section className="placeholder-page">
             <h3>{t[activePage]}</h3>

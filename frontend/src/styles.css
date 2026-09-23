@@ -2583,8 +2583,7 @@ td {
 
 .employee-directory-panel,
 .employee-detail-panel,
-.employee-history-panel,
-.employee-import-panel {
+.employee-history-panel {
   min-width: 0;
   background: #fff;
   border: 1px solid var(--line);
@@ -2627,8 +2626,7 @@ td {
 }
 
 .employee-toolbar label,
-.employee-form label,
-.employee-import-panel label {
+.employee-form label {
   display: grid;
   gap: 8px;
   color: #0f172a;
@@ -2678,8 +2676,7 @@ td {
 }
 
 .employee-detail-panel,
-.employee-history-panel,
-.employee-import-panel {
+.employee-history-panel {
   padding: 18px;
 }
 
@@ -2693,23 +2690,12 @@ td {
   gap: 16px;
 }
 
-.employee-import-panel {
-  grid-column: 2;
-  display: grid;
-  gap: 12px;
-}
-
-.employee-import-panel textarea {
-  width: 100%;
-  resize: vertical;
-}
 
 .employee-history-panel {
-  grid-column: 1;
+  grid-column: 1 / -1;
 }
 
-.employee-history-panel p,
-.employee-import-panel p {
+.employee-history-panel p {
   margin: 0;
   color: #4c5870;
   line-height: 1.45;
@@ -2754,7 +2740,6 @@ td {
     grid-template-columns: 1fr;
   }
 
-  .employee-import-panel,
   .employee-history-panel {
     grid-column: auto;
   }
@@ -3234,6 +3219,64 @@ td {
 .confirmation-actions button {
   min-width: 112px;
 }
+.quick-employee-search {
+  display: grid;
+  gap: 7px;
+  margin: 16px 0 12px;
+  color: #202637;
+  font-size: 14px;
+  font-weight: 800;
+}
+
+.quick-employee-search input,
+.quick-attendance-form input {
+  width: 100%;
+  min-height: 48px;
+  padding: 0 13px;
+  border: 1px solid var(--line-strong);
+  border-radius: 6px;
+  font-size: 16px;
+}
+
+.quick-empty-state {
+  padding: 20px;
+  text-align: center;
+}
+
+.quick-attendance-form {
+  gap: 16px;
+}
+
+.quick-attendance-form label {
+  display: grid;
+  gap: 7px;
+  color: #202637;
+  font-size: 14px;
+  font-weight: 800;
+}
+
+.quick-attendance-success {
+  display: grid;
+  gap: 12px;
+  padding: 18px;
+  background: var(--green-bg);
+  border: 1px solid #86efac;
+  border-radius: 6px;
+}
+
+.quick-attendance-success strong {
+  color: var(--green-text);
+  font-size: 19px;
+}
+
+.quick-attendance-success span {
+  color: #365349;
+  font-weight: 700;
+}
+
+.quick-attendance-success button {
+  margin-top: 6px;
+}
 .quick-checkin-error {
   margin: 12px 0 0;
 }
@@ -3335,4 +3378,83 @@ td {
     overflow-x: auto;
     padding-bottom: 2px;
   }
+}
+.password-input-control {
+  position: relative;
+}
+
+.password-input-control input {
+  padding-right: 48px;
+}
+
+.password-visibility-button {
+  position: absolute;
+  top: 50%;
+  right: 8px;
+  display: grid;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  place-items: center;
+  color: #334155;
+  background: transparent;
+  border: 0;
+  border-radius: 4px;
+  font-size: 17px;
+  line-height: 1;
+  transform: translateY(-50%);
+}
+
+.password-visibility-button:hover {
+  color: #1537ad;
+  background: #eef3ff;
+}
+
+.password-visibility-button:focus-visible {
+  outline: 2px solid #1537ad;
+  outline-offset: 1px;
+}
+.auth-form-message {
+  padding: 10px 12px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  font-size: 14px;
+  font-weight: 700;
+  line-height: 1.4;
+}
+
+.auth-form-message.error {
+  color: #b42318;
+  background: #fef3f2;
+  border-color: #fecdca;
+}
+
+.auth-form-message.success {
+  color: #067647;
+  background: #ecfdf3;
+  border-color: #abefc6;
+}
+.reset-password-card {
+  width: min(100%, 500px);
+}
+
+.reset-password-card .form-section-heading p,
+.reset-password-result p {
+  margin: 6px 0 0;
+  color: var(--muted);
+  line-height: 1.5;
+}
+
+.reset-password-result {
+  display: grid;
+  gap: 18px;
+}
+
+.reset-password-result h2 {
+  margin: 0;
+  font-size: 26px;
+}
+.profile-password-form {
+  display: grid;
+  gap: 16px;
 }

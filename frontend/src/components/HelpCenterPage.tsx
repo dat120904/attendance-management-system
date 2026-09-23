@@ -1,4 +1,4 @@
-﻿import { FormEvent, useEffect, useMemo, useState } from "react";
+import { FormEvent, useEffect, useMemo, useState } from "react";
 import { createSupportTicket, fetchHelpArticles } from "../api";
 import type { HelpArticle, SupportTicket, User } from "../types";
 import type { Translation } from "../i18n";
@@ -53,9 +53,9 @@ export function HelpCenterPage({ articles, authToken, onTicketCreated, t, user }
       setError(t.requiredFields);
       return;
     }
-    const fallbackTicket: SupportTicket = { id: `ticket-${Date.now()}`, requesterId: user.id, requesterName: user.name, subject: form.subject.trim(), message: form.message.trim(), status: "Open", createdAt: new Date().toISOString() };
     try {
-      const ticket = authToken ? (await createSupportTicket(authToken, form)).ticket : fallbackTicket;
+      if (!authToken) throw new Error("Authentication is required");
+      const ticket = (await createSupportTicket(authToken, form)).ticket;
       onTicketCreated(ticket);
       setForm({ subject: "", message: "" });
       setNotice(t.supportRequestSent);

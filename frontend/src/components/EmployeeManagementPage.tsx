@@ -1,5 +1,5 @@
 import { FormEvent, useEffect, useMemo, useState } from "react";
-import { createEmployee, downloadEmployeeExport, fetchEmployees, importEmployees, setEmployeeLocked, updateEmployee } from "../api";
+import { createEmployee, downloadEmployeeExport, fetchEmployees, setEmployeeLocked, updateEmployee } from "../api";
 import type { AttendanceLog, User, UserRole } from "../types";
 import type { Language, Translation } from "../i18n";
 import { translateAttendancePolicy, translateDepartment, translateLeavePolicy, translatePosition, translateRole } from "../utils/localize";
@@ -7,7 +7,6 @@ import { formatAttendanceTime, formatWorkDate } from "../utils/time";
 
 const roleOptions: UserRole[] = ["Employee", "Manager", "HR", "Payroll", "Admin"];
 const statusOptions: Array<NonNullable<User["employmentStatus"]>> = ["Active", "Locked", "Inactive"];
-const defaultImportRows = "Nguyen Van A,a.nguyen@workforce.local,Employee,Product,Frontend Developer\nTran Thi B,b.tran@workforce.local,Employee,Operations,Operations Analyst";
 
 type EmployeeManagementPageProps = {
   authToken: string | null;
@@ -46,8 +45,6 @@ export function EmployeeManagementPage({ authToken, language, logs, onUsersChang
   const [pageSize, setPageSize] = useState(10);
   const [currentPage, setCurrentPage] = useState(1);
   const [form, setForm] = useState<EmployeeForm>(() => toForm(users[0], user));
-  const [importText, setImportText] = useState(defaultImportRows);
-  const [importErrors, setImportErrors] = useState<string[]>([]);
   const [notice, setNotice] = useState("");
   const [error, setError] = useState("");
 
@@ -128,26 +125,6 @@ export function EmployeeManagementPage({ authToken, language, logs, onUsersChang
         upsertUsers({ ...employee, locked, employmentStatus: locked ? "Locked" : "Active" });
       }
       setNotice(t.employeeLocked);
-      setError("");
-    } catch (err) {
-      setError(err instanceof Error ? err.message : t.registerFailed);
-    }
-  }
-
-  async function handleImport() {
-    if (!canManage) return;
-    const { validUsers, errors } = parseImportRows(importText, sourceUsers, t);
-    setImportErrors(errors);
-    if (errors.length) return;
-    try {
-      if (authToken) {
-        const result = await importEmployees(authToken, importText);
-        setImportErrors(result.errors);
-        if (!result.errors.length) setAllUsers(mergeUsers(sourceUsers, result.users));
-      } else {
-        setAllUsers([...sourceUsers, ...validUsers]);
-      }
-      setNotice(t.employeeImported);
       setError("");
     } catch (err) {
       setError(err instanceof Error ? err.message : t.registerFailed);
@@ -266,7 +243,7 @@ export function EmployeeManagementPage({ authToken, language, logs, onUsersChang
                 <label>{t.role}<select value={form.role} onChange={(event) => setFormField("role", event.target.value as UserRole)}>{roleOptions.map((role) => <option value={role} key={role}>{translateRole(role, t)}</option>)}</select></label>
                 <label>{t.department}<input value={form.subtitle} onChange={(event) => setFormField("subtitle", event.target.value)} /></label>
                 <label>{t.position}<input value={form.position} onChange={(event) => setFormField("position", event.target.value)} /></label>
-                <label>{t.directManager}<select value={form.managerId} onChange={(event) => setFormField("managerId", event.target.value)}><option value="">-</option>{managers.map((manager) => <option value={manager.id} key={manager.id}>{manager.name}</option>)}</select></label>
+                <label>{t.directManager}<select value={form.managerId} onChange={(event) => setFormField("managerId", event.target.value)}><option value="">-</option>{managers.filter((manager) => manager.id !== form.id).map((manager) => <option value={manager.id} key={manager.id}>{manager.name}</option>)}</select></label>
                 <label>{t.hireDate}<input type="date" value={form.hireDate} onChange={(event) => setFormField("hireDate", event.target.value)} /></label>
                 <label>{t.employmentStatus}<select value={form.employmentStatus} onChange={(event) => setFormField("employmentStatus", event.target.value as EmployeeForm["employmentStatus"])}>{statusOptions.map((status) => <option value={status} key={status}>{translateStatusOption(status, t)}</option>)}</select></label>
                 <label>{t.attendancePolicy}<input value={form.attendancePolicy} onChange={(event) => setFormField("attendancePolicy", event.target.value)} /></label>
@@ -286,16 +263,6 @@ export function EmployeeManagementPage({ authToken, language, logs, onUsersChang
           {selectedLogs.length ? selectedLogs.map((log) => <p key={log.id}><strong>{formatWorkDate(log.workDate, language === "vi" ? "vi-VN" : "en-US")}</strong> {formatAttendanceTime(log.checkIn, language === "vi" ? "vi-VN" : "en-US")} - {formatAttendanceTime(log.checkOut, language === "vi" ? "vi-VN" : "en-US")} | {log.totalHours}</p>) : <p>{t.noEmployeeLogs}</p>}
         </section>
 
-        {canManage && (
-          <section className="detail-card employee-import-panel">
-            <h3>{t.importEmployees}</h3>
-            <p>{t.importEmployeesHint}</p>
-            <textarea value={importText} onChange={(event) => setImportText(event.target.value)} rows={4} />
-            <button className="primary-button" type="button" onClick={() => void handleImport()}>{t.importEmployees}</button>
-            <h4>{t.importPreview}</h4>
-            {importErrors.length ? importErrors.map((item) => <p className="error-line" key={item}>{item}</p>) : <p>{t.ready}</p>}
-          </section>
-        )}
       </div>
     </section>
   );
@@ -336,7 +303,7 @@ function toForm(employee: User | undefined, currentUser: User): EmployeeForm {
     employeeCode: employee?.employeeCode ?? `EMP-${Date.now().toString().slice(-4)}`,
     phone: employee?.phone ?? "",
     position: employee?.position ?? "",
-    managerId: employee?.managerId ?? (currentUser.role === "Manager" ? currentUser.id : "u-manager"),
+    managerId: employee?.managerId ?? (currentUser.role === "Manager" ? currentUser.id : ""),
     hireDate: employee?.hireDate ?? new Date().toISOString().slice(0, 10),
     employmentStatus: employee?.employmentStatus ?? (employee?.locked ? "Locked" : "Active"),
     attendancePolicy: employee?.attendancePolicy ?? "Office check-in",
@@ -376,36 +343,6 @@ function scopeUsers(users: User[], user: User) {
   if (user.role === "Payroll") return users.filter((item) => item.role !== "Admin");
   if (user.role === "Employee") return [];
   return users;
-}
-
-function parseImportRows(rows: string, existingUsers: User[], t: Translation) {
-  const errors: string[] = [];
-  const validUsers = rows.split(/\r?\n/).map((line, index) => {
-    const [name = "", email = "", role = "Employee", department = "", position = ""] = line.split(",").map((item) => item.trim());
-    if (!line.trim()) return null;
-    if (!name || !email || !department || !roleOptions.includes(role as UserRole) || existingUsers.some((item) => item.email.toLowerCase() === email.toLowerCase())) {
-      errors.push(t.invalidImportRow.replace("{row}", String(index + 1)));
-      return null;
-    }
-    return {
-      id: `u-import-${Date.now()}-${index}`,
-      name,
-      email: email.toLowerCase(),
-      role: role as UserRole,
-      subtitle: department,
-      employeeCode: `IMP-${String(index + 1).padStart(3, "0")}`,
-      position,
-      phone: "",
-      managerId: "u-manager",
-      hireDate: new Date().toISOString().slice(0, 10),
-      employmentStatus: "Active" as const,
-      attendancePolicy: "Office check-in",
-      leavePolicy: "Annual 12 days",
-      remainingLeaveDays: 12,
-      locked: false
-    };
-  }).filter(Boolean) as User[];
-  return { validUsers, errors };
 }
 
 function mergeUsers(current: User[], incoming: User[]) {

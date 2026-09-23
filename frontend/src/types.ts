@@ -242,7 +242,6 @@ export type DashboardMetric = {
 export type DashboardData = {
   greeting: string;
   summaryDate: string;
-  checkedInAt: string;
   sessionSeconds: number;
   weeklyHours: number;
   weeklyTarget: number;

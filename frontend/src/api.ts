@@ -2,6 +2,28 @@ import type { AppNotification, AttendanceLog, HelpArticle, LeaveAttachment, Leav
 
 const API_BASE_URL = import.meta.env.VITE_API_URL ?? "http://localhost:4000";
 
+export type QuickAttendanceEmployee = {
+  id: string;
+  name: string;
+  employeeCode: string;
+  role: User["role"];
+  attendanceStatus: "not-started" | "working";
+};
+
+type QuickAttendanceUsersResponse = {
+  users: QuickAttendanceEmployee[];
+};
+
+export type QuickAttendanceResult = {
+  success: true;
+  message: string;
+  data: {
+    employeeId: string;
+    employeeName: string;
+    action: "check-in" | "check-out";
+    occurredAt: string;
+  };
+};
 type LoginResponse = {
   token: string;
   user: User;
@@ -81,6 +103,16 @@ type AuditLogsResponse = {
   }>;
 };
 
+export async function fetchQuickAttendanceEmployees() {
+  return request<QuickAttendanceUsersResponse>("/api/attendance/quick-users");
+}
+
+export async function submitQuickAttendance(input: { employeeId: string; action: "check-in" | "check-out"; phoneLast4: string; pin: string }) {
+  return request<QuickAttendanceResult>(`/api/attendance/quick-${input.action}`, {
+    method: "POST",
+    body: JSON.stringify({ employeeId: input.employeeId, phoneLast4: input.phoneLast4, pin: input.pin })
+  });
+}
 export async function loginWithPassword(email: string, password: string) {
   const controller = new AbortController();
   const timeout = window.setTimeout(() => controller.abort(), 8_000);
@@ -109,6 +141,50 @@ export async function registerAccount(form: { name: string; email: string; role:
   });
 }
 
+export async function requestPasswordReset(email: string) {
+  return request<{ ok: boolean; message: string }>("/api/auth/forgot-password", { method: "POST", body: JSON.stringify({ email }) });
+}
+
+export async function resetPassword(token: string, password: string, confirmPassword: string) {
+  return request<{ ok: boolean; message: string }>("/api/auth/reset-password", { method: "POST", body: JSON.stringify({ token, password, confirmPassword }) });
+}
+type ApiAttendanceSession = {
+  id: string;
+  employeeId: string;
+  checkInAt: string;
+  device: string;
+  ipAddress: string;
+  location: string;
+};
+
+type DashboardResponse = {
+  session: ApiAttendanceSession | null;
+  sessionSeconds: number;
+  logs: AttendanceLog[];
+  remainingLeaveDays: number;
+  managerAlerts: string[];
+  payrollReadiness: string | null;
+};
+
+export async function fetchDashboard(token: string) {
+  return request<DashboardResponse>("/api/dashboard", { token });
+}
+
+export async function checkIn(token: string) {
+  return request<{ session: ApiAttendanceSession }>("/api/attendance/check-in", { method: "POST", token });
+}
+
+export async function checkOut(token: string) {
+  return request<{ log: AttendanceLog }>("/api/attendance/check-out", { method: "POST", token });
+}
+
+export async function logoutSession(token: string) {
+  return request<{ ok: boolean }>("/api/auth/logout", { method: "POST", token });
+}
+
+export async function changePassword(token: string, currentPassword: string, newPassword: string, confirmPassword: string) {
+  return request<{ ok: boolean; message: string }>("/api/auth/change-password", { method: "POST", token, body: JSON.stringify({ currentPassword, newPassword, confirmPassword }) });
+}
 export async function fetchAttendanceLogs(token: string, params: { dateRange: string; status: string; query: string }) {
   const search = new URLSearchParams(params);
   return request<LogsResponse>(`/api/attendance/logs?${search.toString()}`, {

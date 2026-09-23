@@ -1,0 +1,444 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum UserRole {
+  EMPLOYEE
+  MANAGER
+  HR
+  PAYROLL
+  ADMIN
+}
+
+enum EmploymentStatus {
+  ACTIVE
+  LOCKED
+  INACTIVE
+}
+
+enum AttendanceStatus {
+  ON_TIME
+  LATE
+  EARLY_LEAVE
+  ON_LEAVE
+  MISSING_CHECK_OUT
+  HOLIDAY
+  WEEKEND
+  ADJUSTED
+}
+
+enum AdjustmentStatus {
+  NONE
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+enum LeaveType {
+  ANNUAL
+  SICK
+  UNPAID
+  COMPENSATORY
+}
+
+enum LeaveStatus {
+  DRAFT
+  PENDING_MANAGER
+  PENDING_HR
+  APPROVED
+  REJECTED
+  CANCELLED
+}
+
+enum PayrollStatus {
+  DRAFT
+  CONFIRMED
+  LOCKED
+}
+
+enum NotificationCategory {
+  LEAVE
+  ATTENDANCE
+  CHECKOUT
+  ADJUSTMENT
+  PAYROLL
+  SYSTEM
+}
+
+enum EmailStatus {
+  NOT_SENT
+  SENT
+  FAILED
+}
+
+enum HelpCategory {
+  FAQ
+  CHECK_IN
+  LEAVE
+  ADJUSTMENT
+  PAYROLL
+}
+
+enum TicketStatus {
+  OPEN
+  IN_PROGRESS
+  RESOLVED
+}
+
+model User {
+  id                 String           @id
+  email              String           @unique
+  passwordHash       String?
+  pinHash            String?
+  name               String
+  employeeCode       String?          @unique
+  phone              String?
+  role               UserRole         @default(EMPLOYEE)
+  subtitle           String
+  department         String
+  position           String?
+  managerId          String?
+  hireDate           DateTime?        @db.Date
+  employmentStatus   EmploymentStatus @default(ACTIVE)
+  attendancePolicy   String?
+  leavePolicy        String?
+  remainingLeaveDays Decimal          @default(12) @db.Decimal(7, 2)
+  locked             Boolean          @default(false)
+  createdAt          DateTime         @default(now())
+  updatedAt          DateTime         @updatedAt
+
+  manager              User?                @relation("UserManager", fields: [managerId], references: [id], onDelete: SetNull)
+  directReports        User[]               @relation("UserManager")
+  authSessions         AuthSession[]
+  passwordResetTokens  PasswordResetToken[]
+  attendanceSessions   AttendanceSession[]
+  attendanceLogs       AttendanceLog[]      @relation("EmployeeAttendanceLogs")
+  managedLogs          AttendanceLog[]      @relation("ManagerAttendanceLogs")
+  leaveRequests        LeaveRequest[]       @relation("EmployeeLeaveRequests")
+  managedLeaveRequests LeaveRequest[]       @relation("ManagerLeaveRequests")
+  notifications        Notification[]
+  supportTickets       SupportTicket[]
+  payrollRows          PayrollSummaryRow[]
+
+  @@index([managerId])
+  @@index([role, employmentStatus])
+}
+
+model AuthSession {
+  token     String   @id
+  userId    String
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([expiresAt])
+}
+
+model PasswordResetToken {
+  id        String    @id @default(cuid())
+  userId    String
+  tokenHash String    @unique
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
+  @@index([expiresAt])
+}
+
+model AttendanceSession {
+  id         String   @id
+  employeeId String   @unique
+  checkInAt  DateTime
+  device     String?
+  ipAddress  String?
+  location   String?
+  createdAt  DateTime @default(now())
+
+  employee User @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+
+  @@index([checkInAt])
+}
+
+model AttendanceLog {
+  id               String           @id
+  employeeId       String
+  managerId        String?
+  workDate         DateTime         @db.Date
+  checkInAt        DateTime?
+  checkOutAt       DateTime?
+  totalMinutes     Int              @default(0)
+  overtimeMinutes  Int              @default(0)
+  status           AttendanceStatus @default(ON_TIME)
+  adjustmentStatus AdjustmentStatus @default(NONE)
+  payrollLocked    Boolean          @default(false)
+  createdAt        DateTime         @default(now())
+  updatedAt        DateTime         @updatedAt
+
+  employee   User                  @relation("EmployeeAttendanceLogs", fields: [employeeId], references: [id], onDelete: Restrict)
+  manager    User?                 @relation("ManagerAttendanceLogs", fields: [managerId], references: [id], onDelete: SetNull)
+  adjustment AttendanceAdjustment?
+
+  @@index([employeeId, workDate])
+  @@index([managerId, workDate])
+  @@index([workDate, status])
+}
+
+model AttendanceAdjustment {
+  id              String           @id @default(cuid())
+  attendanceLogId String           @unique
+  reason          String
+  requestedById   String
+  decidedById     String?
+  status          AdjustmentStatus @default(PENDING)
+  createdAt       DateTime         @default(now())
+  decidedAt       DateTime?
+
+  attendanceLog AttendanceLog @relation(fields: [attendanceLogId], references: [id], onDelete: Cascade)
+
+  @@index([requestedById, status])
+}
+
+model LeaveRequest {
+  id             String      @id
+  employeeId     String
+  managerId      String?
+  type           LeaveType
+  startDate      DateTime    @db.Date
+  endDate        DateTime    @db.Date
+  days           Decimal     @db.Decimal(7, 2)
+  reason         String
+  attachmentName String?
+  status         LeaveStatus @default(DRAFT)
+  createdAt      DateTime    @default(now())
+  updatedAt      DateTime    @updatedAt
+
+  employee   User             @relation("EmployeeLeaveRequests", fields: [employeeId], references: [id], onDelete: Restrict)
+  manager    User?            @relation("ManagerLeaveRequests", fields: [managerId], references: [id], onDelete: SetNull)
+  attachment LeaveAttachment?
+
+  @@index([employeeId, status])
+  @@index([managerId, status])
+  @@index([startDate, endDate])
+}
+
+model LeaveAttachment {
+  id             String   @id @default(cuid())
+  leaveRequestId String   @unique
+  name           String
+  mimeType       String
+  size           Int
+  url            String?
+  storageKey     String?
+  dataUrl        String?
+  uploadedAt     DateTime @default(now())
+  uploadedBy     String?
+
+  leaveRequest LeaveRequest @relation(fields: [leaveRequestId], references: [id], onDelete: Cascade)
+}
+
+model LeaveWorkflowConfig {
+  id                               String   @id @default("default")
+  requireHrApproval                Boolean  @default(true)
+  annualLeaveRequiresBalance       Boolean  @default(true)
+  allowEmployeeCancelBeforeManager Boolean  @default(true)
+  attachmentRequiredForSickLeave   Boolean  @default(false)
+  defaultAnnualLeaveDays           Decimal  @default(12) @db.Decimal(7, 2)
+  updatedAt                        DateTime @updatedAt
+}
+
+model WorkSchedule {
+  id                 String   @id
+  name               String
+  startTime          String
+  morningEndTime     String
+  afternoonStartTime String
+  endTime            String
+  breakMinutes       Int      @default(60)
+  workDays           Int[]
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+}
+
+model Holiday {
+  id        String   @id
+  name      String
+  startDate DateTime @db.Date
+  endDate   DateTime @db.Date
+  paid      Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([startDate, endDate])
+}
+
+model RolePermission {
+  id         String   @id @default(cuid())
+  role       UserRole
+  permission String
+  createdAt  DateTime @default(now())
+
+  @@unique([role, permission])
+  @@index([role])
+}
+
+model SystemSetting {
+  id                             String   @id @default("default")
+  standardStartTime              String   @default("08:30")
+  standardEndTime                String   @default("17:30")
+  lateGraceMinutes               Int      @default(10)
+  earlyLeaveGraceMinutes         Int      @default(10)
+  overtimeAfterHours             Int      @default(8)
+  requireLocation                Boolean  @default(true)
+  defaultAnnualLeaveDays         Decimal  @default(12) @db.Decimal(7, 2)
+  attachmentRequiredForSickLeave Boolean  @default(false)
+  requireHrApproval              Boolean  @default(true)
+  blockAnnualLeaveOverBalance    Boolean  @default(true)
+  inAppEnabled                   Boolean  @default(true)
+  emailEnabled                   Boolean  @default(true)
+  managerDigestEnabled           Boolean  @default(true)
+  payrollReminderEnabled         Boolean  @default(true)
+  defaultPayrollExportFormat     String   @default("excel")
+  includePayrollWarnings         Boolean  @default(true)
+  lockRequiresResolvedLogs       Boolean  @default(true)
+  minPasswordLength              Int      @default(6)
+  sessionTimeoutMinutes          Int      @default(480)
+  allowSelfRegistration          Boolean  @default(true)
+  requireTwoFactor               Boolean  @default(false)
+  calendarProvider               String?
+  payrollProvider                String?
+  webhookUrl                     String?
+  auditEnabled                   Boolean  @default(true)
+  auditRetentionDays             Int      @default(365)
+  updatedAt                      DateTime @updatedAt
+}
+
+model PayrollPeriod {
+  id            String        @id
+  name          String
+  startDate     DateTime      @db.Date
+  endDate       DateTime      @db.Date
+  status        PayrollStatus @default(DRAFT)
+  createdById   String
+  createdAt     DateTime      @default(now())
+  confirmedById String?
+  confirmedAt   DateTime?
+  lockedById    String?
+  lockedAt      DateTime?
+  unlockedById  String?
+  unlockedAt    DateTime?
+  warnings      String[]
+  updatedAt     DateTime      @updatedAt
+
+  rows     PayrollSummaryRow[]
+  versions PayrollVersion[]
+
+  @@index([startDate, endDate])
+  @@index([status])
+}
+
+model PayrollSummaryRow {
+  id                String  @id @default(cuid())
+  payrollPeriodId   String
+  employeeId        String
+  department        String
+  standardHours     Decimal @default(0) @db.Decimal(10, 2)
+  workedHours       Decimal @default(0) @db.Decimal(10, 2)
+  overtimeHours     Decimal @default(0) @db.Decimal(10, 2)
+  paidLeaveHours    Decimal @default(0) @db.Decimal(10, 2)
+  unpaidLeaveHours  Decimal @default(0) @db.Decimal(10, 2)
+  missingHours      Decimal @default(0) @db.Decimal(10, 2)
+  lateCount         Int     @default(0)
+  earlyLeaveCount   Int     @default(0)
+  missingLogCount   Int     @default(0)
+  totalPayableHours Decimal @default(0) @db.Decimal(10, 2)
+
+  payrollPeriod PayrollPeriod @relation(fields: [payrollPeriodId], references: [id], onDelete: Cascade)
+  employee      User          @relation(fields: [employeeId], references: [id], onDelete: Restrict)
+
+  @@unique([payrollPeriodId, employeeId])
+  @@index([employeeId])
+}
+
+model PayrollVersion {
+  id              String   @id @default(cuid())
+  payrollPeriodId String
+  version         Int
+  action          String
+  actorId         String
+  notes           String
+  createdAt       DateTime @default(now())
+
+  payrollPeriod PayrollPeriod @relation(fields: [payrollPeriodId], references: [id], onDelete: Cascade)
+
+  @@unique([payrollPeriodId, version])
+  @@index([actorId])
+}
+
+model Notification {
+  id            String               @id
+  recipientId   String?
+  recipientRole UserRole?
+  title         String
+  message       String
+  category      NotificationCategory
+  read          Boolean              @default(false)
+  createdAt     DateTime             @default(now())
+  emailStatus   EmailStatus          @default(NOT_SENT)
+  retryCount    Int                  @default(0)
+
+  recipient User? @relation(fields: [recipientId], references: [id], onDelete: Cascade)
+
+  @@index([recipientId, read])
+  @@index([recipientRole, read])
+}
+
+model HelpArticle {
+  id           String       @id
+  title        String
+  category     HelpCategory
+  body         String
+  allowedRoles UserRole[]
+  createdAt    DateTime     @default(now())
+  updatedAt    DateTime     @updatedAt
+
+  @@index([category])
+}
+
+model SupportTicket {
+  id          String       @id
+  requesterId String
+  subject     String
+  message     String
+  status      TicketStatus @default(OPEN)
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+
+  requester User @relation(fields: [requesterId], references: [id], onDelete: Restrict)
+
+  @@index([requesterId, status])
+}
+
+model AuditLog {
+  id        String   @id
+  actorId   String
+  action    String
+  targetId  String
+  success   Boolean?
+  ipAddress String?
+  userAgent String?
+  createdAt DateTime @default(now())
+
+  @@index([actorId, createdAt])
+  @@index([targetId, createdAt])
+  @@index([action, createdAt])
+}
