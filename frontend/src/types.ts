@@ -33,6 +33,9 @@ export type AttendanceLog = {
   status: "On Time" | "Late" | "Early Leave" | "On Leave" | "Missing Check-out" | "Holiday" | "Weekend" | "Adjusted";
   adjustmentStatus: "None" | "Pending" | "Approved" | "Rejected";
   payrollLocked: boolean;
+  device?: string;
+  ipAddress?: string;
+  location?: string;
 };
 
 export type AttendanceSessionStatus = "not-started" | "working" | "checked-out" | "missing";

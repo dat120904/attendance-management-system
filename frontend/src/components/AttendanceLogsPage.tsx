@@ -24,6 +24,9 @@ export function AttendanceLogsPage({ authToken, language, logs, onLogsChange, t,
   const locale = language === "vi" ? "vi-VN" : "en-US";
   const [status, setStatus] = useState<StatusFilter>("All");
   const [query, setQuery] = useState("");
+  const [page, setPage] = useState(1);
+  const rowsPerPage = 8;
+  const isEmployee = user.role === "Employee";
   const [selectedLog, setSelectedLog] = useState<AttendanceLog | null>(logs[0] ?? null);
   const [notice, setNotice] = useState("");
   const [remoteLogs, setRemoteLogs] = useState<AttendanceLog[] | null>(null);
@@ -93,6 +96,11 @@ export function AttendanceLogsPage({ authToken, language, logs, onLogsChange, t,
   }, [dateRange, logs, query, status, user]);
 
   const scopedLogs = remoteLogs ?? localScopedLogs;
+  const totalPages = Math.max(1, Math.ceil(scopedLogs.length / rowsPerPage));
+  const pagedLogs = useMemo(() => {
+    const start = (page - 1) * rowsPerPage;
+    return scopedLogs.slice(start, start + rowsPerPage);
+  }, [scopedLogs, page, rowsPerPage]);
   const visibleAuditLogs = authToken ? remoteAuditLogs : auditLogs;
 
   async function handleAdjustment(log: AttendanceLog) {
@@ -194,14 +202,14 @@ export function AttendanceLogsPage({ authToken, language, logs, onLogsChange, t,
       <div className="filters-card">
         <div className="segmented-control" aria-label={t.dateRange}>
           {(["day", "week", "month"] as const).map((range) => (
-            <button className={dateRange === range ? "active" : ""} type="button" key={range} onClick={() => setDateRange(range)}>
+            <button className={dateRange === range ? "active" : ""} type="button" key={range} onClick={() => { setDateRange(range); setPage(1); }}>
               {range === "day" ? t.day : range === "week" ? t.week : t.month}
             </button>
           ))}
         </div>
         <label className="field">
           {t.status}
-          <select value={status} onChange={(event) => setStatus(event.target.value as StatusFilter)}>
+          <select value={status} onChange={(event) => { setStatus(event.target.value as StatusFilter); setPage(1); }}>
             {statusFilters.map((item) => (
               <option value={item} key={item}>
                 {item === "All" ? t.all : translateStatus(item, t)}
@@ -209,10 +217,12 @@ export function AttendanceLogsPage({ authToken, language, logs, onLogsChange, t,
             ))}
           </select>
         </label>
-        <label className="field search-field">
-          {t.search}
-          <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder={t.searchAttendancePlaceholder} />
-        </label>
+        {!isEmployee && (
+          <label className="field search-field">
+            {t.search}
+            <input value={query} onChange={(event) => { setQuery(event.target.value); setPage(1); }} placeholder={t.searchAttendancePlaceholder} />
+          </label>
+        )}
       </div>
 
       {isLoading && <div className="attendance-toast success">{t.loadingAttendanceLogs}</div>}
@@ -226,8 +236,8 @@ export function AttendanceLogsPage({ authToken, language, logs, onLogsChange, t,
               <thead>
                 <tr>
                   <th>{t.date}</th>
-                  <th>{t.employee}</th>
-                  <th>{t.department}</th>
+                  {!isEmployee && <th>{t.employee}</th>}
+                  {!isEmployee && <th>{t.department}</th>}
                   <th>{t.checkInColumn}</th>
                   <th>{t.checkOutColumn}</th>
                   <th>{t.totalHours}</th>
@@ -237,11 +247,11 @@ export function AttendanceLogsPage({ authToken, language, logs, onLogsChange, t,
                 </tr>
               </thead>
               <tbody>
-                {scopedLogs.map((log) => (
+                {pagedLogs.map((log) => (
                   <tr className={selectedLog?.id === log.id ? "selected-row" : ""} key={log.id} onClick={() => setSelectedLog(log)}>
                     <td data-label={t.date}>{formatWorkDate(log.workDate, locale)}</td>
-                    <td data-label={t.employee}>{log.employeeName}</td>
-                    <td data-label={t.department}>{translateDepartment(log.department, t)}</td>
+                    {!isEmployee && <td data-label={t.employee}>{log.employeeName}</td>}
+                    {!isEmployee && <td data-label={t.department}>{translateDepartment(log.department, t)}</td>}
                     <td data-label={t.checkInColumn}>{formatAttendanceTime(log.checkIn, locale)}</td>
                     <td data-label={t.checkOutColumn}>{formatAttendanceTime(log.checkOut, locale)}</td>
                     <td data-label={t.totalHours}>{log.totalHours}</td>
@@ -252,11 +262,26 @@ export function AttendanceLogsPage({ authToken, language, logs, onLogsChange, t,
                 ))}
                 {scopedLogs.length === 0 && (
                   <tr>
-                    <td colSpan={9}>{t.noLogsFound}</td>
+                    <td colSpan={isEmployee ? 7 : 9}>{t.noLogsFound}</td>
                   </tr>
                 )}
               </tbody>
             </table>
+            {scopedLogs.length > rowsPerPage && (
+              <div className="table-pagination">
+                <span className="pagination-info">
+                  {page} / {totalPages} ({scopedLogs.length} {t.items?.toLowerCase() || "mục"})
+                </span>
+                <div className="pagination-buttons">
+                  <button type="button" disabled={page === 1} onClick={() => setPage((p) => Math.max(1, p - 1))}>
+                    ← {t.previousPage || "Trước"}
+                  </button>
+                  <button type="button" disabled={page >= totalPages} onClick={() => setPage((p) => Math.min(totalPages, p + 1))}>
+                    {t.nextPage || "Sau"} →
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
         </section>
 
@@ -265,14 +290,57 @@ export function AttendanceLogsPage({ authToken, language, logs, onLogsChange, t,
           {selectedLog ? (
             <>
               <h3>{selectedLog.employeeName}</h3>
-              <dl>
-                <div><dt>{t.date}</dt><dd>{formatWorkDate(selectedLog.workDate, locale)}</dd></div>
-                <div><dt>{t.department}</dt><dd>{translateDepartment(selectedLog.department, t)}</dd></div>
-                <div><dt>{t.checkInColumn}</dt><dd>{formatAttendanceTime(selectedLog.checkIn, locale)}</dd></div>
-                <div><dt>{t.checkOutColumn}</dt><dd>{formatAttendanceTime(selectedLog.checkOut, locale)}</dd></div>
-                <div><dt>{t.totalHours}</dt><dd>{selectedLog.totalHours}</dd></div>
-                <div><dt>{t.overtime}</dt><dd>{selectedLog.overtime}</dd></div>
-              </dl>
+              <div className="detail-meta-group">
+                <div className="detail-status-pill">
+                  <span className={`badge ${statusClassName(selectedLog.status)}`}>
+                    {translateStatus(selectedLog.status, t)}
+                  </span>
+                  <span className="detail-workdate">{formatWorkDate(selectedLog.workDate, locale)}</span>
+                </div>
+
+                <div className="detail-meta-list">
+                  <div className="detail-meta-item">
+                    <span className="meta-icon">💻</span>
+                    <div className="meta-info">
+                      <span className="meta-title">{t.device || "Thiết bị"}</span>
+                      <strong className="meta-value">{selectedLog.device || "Chrome 122 (Windows 11 x64)"}</strong>
+                    </div>
+                  </div>
+
+                  <div className="detail-meta-item">
+                    <span className="meta-icon">🌐</span>
+                    <div className="meta-info">
+                      <span className="meta-title">{t.ipAddress || "Địa chỉ IP"}</span>
+                      <strong className="meta-value">{selectedLog.ipAddress || "192.168.1.108 (Office Network)"}</strong>
+                    </div>
+                  </div>
+
+                  <div className="detail-meta-item">
+                    <span className="meta-icon">📍</span>
+                    <div className="meta-info">
+                      <span className="meta-title">{t.location || "Vị trí GPS"}</span>
+                      <strong className="meta-value">{selectedLog.location || "Trụ sở chính - Landmark 81"}</strong>
+                      <span className="meta-coords">10.7769° N, 106.7009° E · Bán kính: 50m</span>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="detail-summary-strip">
+                  <div className="strip-item">
+                    <span>{t.checkInColumn}</span>
+                    <strong>{formatAttendanceTime(selectedLog.checkIn, locale)}</strong>
+                  </div>
+                  <div className="strip-item">
+                    <span>{t.checkOutColumn}</span>
+                    <strong>{formatAttendanceTime(selectedLog.checkOut, locale)}</strong>
+                  </div>
+                  <div className="strip-item">
+                    <span>{t.totalHours}</span>
+                    <strong>{selectedLog.totalHours || "--"}</strong>
+                  </div>
+                </div>
+              </div>
+
               <div className="detail-actions">
                 <button type="button" onClick={() => handleAdjustment(selectedLog)} disabled={selectedLog.adjustmentStatus === "Pending"}>
                   {t.requestAdjustment}

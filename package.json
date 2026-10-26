@@ -1,0 +1,13 @@
+{
+  "name": "workforce-pro-ams",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Workforce Pro - Attendance Management System",
+  "scripts": {
+    "dev": "npx concurrently -n \"BACKEND,FRONTEND\" -c \"cyan,magenta\" \"npm --prefix backend run dev\" \"npm --prefix frontend run dev\"",
+    "build:backend": "npm --prefix backend run build",
+    "build:frontend": "npm --prefix frontend run build",
+    "build": "npm --prefix backend run build && npm --prefix frontend run build",
+    "start": "npm run dev"
+  }
+}

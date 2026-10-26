@@ -5,7 +5,25 @@ Ung dung cham cong duoc tach thanh 2 phan:
 - `frontend`: React + TypeScript + Vite.
 - `backend`: TypeScript API mock dung Node HTTP.
 
-## Chay frontend
+## Chay tu dong ca Frontend va Backend
+
+Co 2 cach de tu dong chay dong thoi ca 2:
+
+### Cach 1: Nhap dup file `start.bat` (Tien loi nhat tren Windows)
+- Chi can nhap dup chuot vao file [start.bat](file:///d:/AMS/start.bat) tai thu muc goc.
+- He thong se tu dong build backend, khoi dong Backend (Port 4000), khoi dong Frontend (Port 5173) va tu dong mo trinh duyet `http://localhost:5173`.
+- De tat ca 2 dich vu va giai phong cong khi can, chi can nhap dup file [stop.bat](file:///d:/AMS/stop.bat).
+
+### Cach 2: Dung lenh npm tai thu muc goc
+```bash
+npm run dev
+```
+
+---
+
+## Chay thu cong tung phan
+
+### Chay frontend
 
 ```bash
 cd frontend
@@ -15,7 +33,7 @@ npm run dev
 
 Frontend mac dinh chay tai `http://localhost:5173`.
 
-## Chay backend
+### Chay backend
 
 ```bash
 cd backend
