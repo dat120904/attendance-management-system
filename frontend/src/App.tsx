@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { AttendanceLogsPage } from "./components/AttendanceLogsPage";
 import { AuthPage } from "./components/AuthPage";
 import { ResetPasswordPage } from "./components/ResetPasswordPage";
@@ -26,6 +26,32 @@ export default function App() {
   const [language, setLanguage] = useState<Language>("en");
   const [activePage, setActivePage] = useState<AppPage>("dashboard");
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
+  const [isSidebarCollapsed, setIsSidebarCollapsed] = useState<boolean>(() => {
+    return localStorage.getItem("ams_sidebar_collapsed") === "true";
+  });
+
+  function handleToggleSidebar() {
+    if (window.innerWidth <= 820) {
+      setIsMobileMenuOpen((current) => !current);
+    } else {
+      setIsSidebarCollapsed((current) => {
+        const next = !current;
+        localStorage.setItem("ams_sidebar_collapsed", String(next));
+        return next;
+      });
+    }
+  }
+
+  useEffect(() => {
+    function handleKeyDown(event: KeyboardEvent) {
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "b") {
+        event.preventDefault();
+        handleToggleSidebar();
+      }
+    }
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, []);
   const [isLogoutConfirmationOpen, setIsLogoutConfirmationOpen] = useState(false);
   const [pendingAttendanceAction, setPendingAttendanceAction] = useState<"check-in" | "check-out" | null>(null);
   const [attendanceSession, setAttendanceSession] = useState<AttendanceSession>({
@@ -216,15 +242,14 @@ export default function App() {
     setIsLogoutConfirmationOpen(true);
   }
 
-  async function handleLogout() {
+  function handleLogout() {
+    const token = authToken;
     setIsLogoutConfirmationOpen(false);
-    if (authToken) {
-      try { await logoutSession(authToken); } catch { /* Clear local authentication even if the request fails. */ }
-    }
     setAuthToken(null);
     setUser(null);
     setActivePage("dashboard");
     setAttendanceSession({ status: "not-started", checkInAt: null, checkOutAt: null, elapsedSeconds: 0, device: "", ipAddress: "", location: "" });
+    if (token) void logoutSession(token).catch(() => undefined);
   }
   function handleNavigate(page: AppPage) {
     if (!user || canAccessPage(user.role, page)) {
@@ -236,8 +261,8 @@ export default function App() {
   }
 
   return (
-    <div className="app-shell">
-      <Sidebar activePage={activePage} onLogout={requestLogout} onNavigate={handleNavigate} user={user} t={t} isOpen={isMobileMenuOpen} onClose={() => setIsMobileMenuOpen(false)} />
+    <div className={`app-shell ${isSidebarCollapsed ? "sidebar-collapsed" : ""}`}>
+      <Sidebar activePage={activePage} onLogout={requestLogout} onNavigate={handleNavigate} user={user} t={t} isOpen={isMobileMenuOpen} isCollapsed={isSidebarCollapsed} onClose={() => setIsMobileMenuOpen(false)} onToggleCollapse={handleToggleSidebar} />
       {isMobileMenuOpen && <button className="sidebar-backdrop" type="button" aria-label={t.close} onClick={() => setIsMobileMenuOpen(false)} />}
       <main className="workspace">
         <Topbar
@@ -253,7 +278,8 @@ export default function App() {
           onMarkNotificationRead={(notificationId) => void handleMarkNotificationRead(notificationId)}
           onRetryNotificationEmail={(notificationId) => void handleRetryNotificationEmail(notificationId)}
           onOpenProfile={() => setActivePage("profile")}
-          onMenuClick={() => setIsMobileMenuOpen((current) => !current)}
+          onMenuClick={handleToggleSidebar}
+          isSidebarCollapsed={isSidebarCollapsed}
           t={t}
           user={user}
         />

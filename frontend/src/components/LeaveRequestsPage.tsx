@@ -128,6 +128,7 @@ export function LeaveRequestsPage({
         setSelectedRequest(result.request);
         setNotice(submitMode === "draft" ? t.leaveDraftSaved : t.leaveCreated);
         resetForm(today);
+        setIsCreateOpen(false);
       } catch (error) {
         setNotice(error instanceof Error ? error.message : t.leaveCreateFailed);
       }
@@ -154,6 +155,7 @@ export function LeaveRequestsPage({
     setSelectedRequest(nextRequest);
     setNotice(submitMode === "draft" ? t.leaveDraftSaved : t.leaveCreated);
     resetForm(today);
+    setIsCreateOpen(false);
   }
 
   function validateRequestForm(submitMode: "draft" | "submit") {

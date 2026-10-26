@@ -1,7 +1,8 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { AppNotification, AppPage, AttendanceSession, User } from "../types";
 import type { Language, Translation } from "../i18n";
-import { BellIcon, LoginIcon } from "./icons";
+import { BellIcon } from "./icons";
+import { formatDuration } from "../utils/time";
 
 type TopbarProps = {
   attendanceSession: AttendanceSession;
@@ -16,21 +17,41 @@ type TopbarProps = {
   onRetryNotificationEmail: (notificationId: string) => void;
   onOpenProfile: () => void;
   onMenuClick: () => void;
+  isSidebarCollapsed?: boolean;
   user: User;
   onLogout: () => void;
   t: Translation;
 };
 
-export function Topbar({ activePage, attendanceSession, isAttendanceBusy, language, notifications, onAttendanceAction, onLanguageChange, onMarkAllNotificationsRead, onMarkNotificationRead, onRetryNotificationEmail, onOpenProfile, onMenuClick, user, onLogout, t }: TopbarProps) {
+export function Topbar({ activePage, attendanceSession, isAttendanceBusy, language, notifications, onAttendanceAction, onLanguageChange, onMarkAllNotificationsRead, onMarkNotificationRead, onRetryNotificationEmail, onOpenProfile, onMenuClick, isSidebarCollapsed, user, onLogout, t }: TopbarProps) {
   const [isAccountOpen, setIsAccountOpen] = useState(false);
   const [isNotificationsOpen, setIsNotificationsOpen] = useState(false);
+  const [seconds, setSeconds] = useState(attendanceSession.elapsedSeconds);
   const isWorking = attendanceSession.status === "working";
   const actionLabel = isAttendanceBusy ? (isWorking ? t.checkingOut : t.checkingIn) : isWorking ? t.checkOut : t.checkIn;
   const unreadCount = notifications.filter((item) => !item.read).length;
 
+  useEffect(() => {
+    setSeconds(attendanceSession.elapsedSeconds);
+  }, [attendanceSession.elapsedSeconds, attendanceSession.status]);
+
+  useEffect(() => {
+    if (attendanceSession.status !== "working") return;
+    const interval = window.setInterval(() => setSeconds((current) => current + 1), 1000);
+    return () => window.clearInterval(interval);
+  }, [attendanceSession.status]);
+
   return (
     <header className="topbar">
-      <button className="menu-button" type="button" aria-label={t.openMenu} aria-controls="main-navigation" onClick={onMenuClick}>
+      <button
+        className={`menu-button ${isSidebarCollapsed ? "collapsed" : ""}`}
+        type="button"
+        aria-label={isSidebarCollapsed ? t.expandSidebar : t.collapseSidebar}
+        title={isSidebarCollapsed ? t.expandSidebar : t.collapseSidebar}
+        aria-controls="main-navigation"
+        aria-expanded={!isSidebarCollapsed}
+        onClick={onMenuClick}
+      >
         <span />
         <span />
         <span />
@@ -41,6 +62,24 @@ export function Topbar({ activePage, attendanceSession, isAttendanceBusy, langua
           <button className={language === "en" ? "active" : ""} type="button" onClick={() => onLanguageChange("en")}>{t.english}</button>
           <button className={language === "vi" ? "active" : ""} type="button" onClick={() => onLanguageChange("vi")}>{t.vietnamese}</button>
         </div>
+
+        <div className={`topbar-checkin-widget ${isWorking ? "is-working" : ""}`}>
+          <span className={`status-dot ${isWorking ? "pulse-green" : "idle"}`} title={isWorking ? t.working : t.notStarted} />
+          <div className="topbar-session-info">
+            <span className="session-label">Session:</span>
+            <span className="topbar-timer">{formatDuration(isWorking ? seconds : 0)}</span>
+          </div>
+          <button
+            className={`topbar-pill-btn ${isWorking ? "checkout" : ""}`}
+            type="button"
+            onClick={onAttendanceAction}
+            disabled={isAttendanceBusy}
+          >
+            <span className="pill-btn-arrow" aria-hidden="true">→</span>
+            <span>{actionLabel}</span>
+          </button>
+        </div>
+
         <div className="notification-menu-wrap">
           <button className={`icon-button notification-trigger ${isNotificationsOpen ? "active" : ""}`} type="button" aria-label={t.notifications} aria-expanded={isNotificationsOpen} onClick={() => { setIsNotificationsOpen((current) => !current); setIsAccountOpen(false); }}>
             <BellIcon />
@@ -75,10 +114,6 @@ export function Topbar({ activePage, attendanceSession, isAttendanceBusy, langua
             </div>
           )}
         </div>
-        {activePage !== "dashboard" && <button className="checkin-button" type="button" onClick={onAttendanceAction} disabled={isAttendanceBusy}>
-          <LoginIcon />
-          {actionLabel}
-        </button>}
         <div className="account-menu-wrap">
           <button className="avatar" type="button" aria-label={`${user.name} ${t.accountMenu}`} aria-expanded={isAccountOpen} onClick={() => { setIsAccountOpen((current) => !current); setIsNotificationsOpen(false); }}>
             <span aria-hidden="true">{user.name.charAt(0)}</span>
